@@ -47,6 +47,12 @@
 //!   // --> smol::block_on( subscription_stream );
 //! ```
 
+// During the incremental Zenoh port, several backend-neutral helpers (name
+// mangling, time, etc.) are currently only consumed by the DDS backend; they
+// become live as E4–E6 wire up the Zenoh side. Allow dead_code on the `zenoh`
+// build so it stays warning-clean without scattering per-item cfgs.
+#![cfg_attr(not(feature = "dds"), allow(dead_code))]
+
 // ---------------------------------------------------------------------------
 // Middleware backend selection. Exactly one of `dds` (default) or `zenoh` must
 // be enabled. See
@@ -64,11 +70,19 @@ compile_error!(
    or `--features zenoh`."
 );
 
+// lazy_static is only used by DDS-backend modules (builtin_topics, context).
+#[cfg(feature = "dds")]
 #[macro_use]
 extern crate lazy_static;
 
+// NOTE: modules that depend on RustDDS are gated behind the `dds` feature.
+// The `zenoh` backend re-implements the corresponding public API incrementally
+// (see docs/zenoh_study/refactoring_plan.md, issues E3–E9). Backend-neutral
+// modules (names, message, qos, time, the wire-format spec) compile on both.
+
 /// Some builtin datatypes needed for ROS2 communication
 /// Some convenience topic infos for ROS2 communication
+#[cfg(feature = "dds")]
 pub mod builtin_topics;
 
 #[doc(hidden)]
@@ -78,6 +92,7 @@ pub mod action_msgs; // action mechanism implementation
 pub mod builtin_interfaces;
 
 #[doc(hidden)]
+#[cfg(feature = "dds")]
 pub mod context;
 
 #[doc(hidden)] // needed for actions implementation
@@ -85,32 +100,43 @@ pub mod unique_identifier_msgs;
 
 #[doc(hidden)]
 #[deprecated] // we should remove the rest of these
+#[cfg(feature = "dds")]
 pub mod interfaces;
 
 /// ROS 2 Action machinery
+#[cfg(feature = "dds")]
 pub mod action;
 /// ROS 2 distribution identification (compile-time selection + runtime check)
 pub mod distributions;
+#[cfg(feature = "dds")]
 pub mod entities_info;
+#[cfg(feature = "dds")]
 mod gid;
 pub mod log;
 pub mod message;
+#[cfg(feature = "dds")]
 pub mod message_info;
 pub mod names;
+#[cfg(feature = "dds")]
 pub mod parameters;
 #[doc(hidden)]
+#[cfg(feature = "dds")]
 pub mod pubsub;
 /// Backend-neutral Quality-of-Service profile.
 pub mod qos;
+#[cfg(feature = "dds")]
 pub mod rcl_interfaces;
 pub mod ros_time;
+#[cfg(feature = "dds")]
 pub mod rosout;
+#[cfg(feature = "dds")]
 pub mod service;
 
 pub mod steady_time;
 mod wide_string;
 
 #[doc(hidden)]
+#[cfg(feature = "dds")]
 pub(crate) mod node;
 
 /// Zenoh middleware backend (cargo feature `zenoh`).
@@ -122,6 +148,7 @@ pub(crate) mod node;
 pub(crate) mod zenoh_backend;
 
 // Re-exports from crate root to simplify usage
+#[cfg(feature = "dds")]
 #[doc(inline)]
 pub use context::*;
 #[doc(inline)]
@@ -130,26 +157,37 @@ pub use distributions::{RosDistro, COMPILED_ROS_DISTRO};
 pub use message::Message;
 #[doc(inline)]
 pub use names::{ActionTypeName, MessageTypeName, Name, NodeName, ServiceTypeName};
+#[cfg(feature = "dds")]
 #[doc(inline)]
 pub use message_info::MessageInfo;
+#[cfg(feature = "dds")]
 #[doc(inline)]
 pub use node::*;
+#[cfg(feature = "dds")]
 #[doc(inline)]
 pub use parameters::{Parameter, ParameterValue};
 #[doc(inline)]
 pub use qos::QosProfile;
+#[cfg(feature = "dds")]
 #[doc(inline)]
 pub use pubsub::*;
+#[cfg(feature = "dds")]
 #[doc(inline)]
 pub use service::{AService, Client, Server, Service, ServiceMapping};
+#[cfg(feature = "dds")]
 #[doc(inline)]
 pub use action::{Action, ActionTypes};
 #[doc(inline)]
 pub use wide_string::WString;
 #[doc(inline)]
 pub use ros_time::{ROSTime, SystemTime};
+#[cfg(feature = "dds")]
 #[doc(inline)]
 pub use rosout::{NodeLoggingHandle, RosoutRaw};
+// Zenoh backend public API (incremental; see E3–E9).
+#[cfg(feature = "zenoh")]
+#[doc(inline)]
+pub use zenoh_backend::context::{Context, ContextOptions};
 
 /// Module for stuff we do not want to export from top level;
 pub mod ros2 {

@@ -27,9 +27,9 @@ pub(crate) mod type_hash;
 // #[cfg(feature = "zenoh")]
 // pub(crate) mod attachment;
 
-// E3 — Zenoh session / Context.
-// #[cfg(feature = "zenoh")]
-// pub(crate) mod session;
+// E3 — Zenoh session / Context (needs the `zenoh` crate).
+#[cfg(feature = "zenoh")]
+pub(crate) mod context;
 
 // E4 — Pub/Sub.
 // #[cfg(feature = "zenoh")]
