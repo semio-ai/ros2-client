@@ -10,9 +10,9 @@
 //!   [`WILDCARD`] in the hash slot, so they receive from any publisher/client
 //!   regardless of hash.
 //! * **Senders** look up a correct hash from the [`known_type_hash`] table for
-//!   the common interop types; unknown types fall back to a wildcard/placeholder
-//!   and send-direction interop with C++ peers may not match until full IDL
-//!   hashing lands.
+//!   the common interop types; unknown types fall back to a
+//!   wildcard/placeholder and send-direction interop with C++ peers may not
+//!   match until full IDL hashing lands.
 //!
 //! The table values are taken from observed `rmw_zenoh` traffic / the design
 //! examples and are covered by a test so drift is caught.

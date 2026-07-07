@@ -49,7 +49,8 @@
 
 // ---------------------------------------------------------------------------
 // Middleware backend selection. Exactly one of `dds` (default) or `zenoh` must
-// be enabled. See docs/decisions/0002-dual-backend-compile-time-feature-selection.md
+// be enabled. See
+// docs/decisions/0002-dual-backend-compile-time-feature-selection.md
 // ---------------------------------------------------------------------------
 #[cfg(all(feature = "dds", feature = "zenoh"))]
 compile_error!(

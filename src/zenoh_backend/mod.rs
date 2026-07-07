@@ -12,10 +12,10 @@
 //! The submodules are populated by the E2–E6 work items (see
 //! `docs/zenoh_study/refactoring_plan.md`).
 //!
-//! The "wire-format spec" submodules below ([`keyexpr`], [`type_hash`], [`gid`])
-//! are pure (no dependency on the `zenoh` crate), so they compile and are
-//! unit-tested on any build — including the default `dds` build, where they are
-//! otherwise unused.
+//! The "wire-format spec" submodules below ([`keyexpr`], [`type_hash`],
+//! [`gid`]) are pure (no dependency on the `zenoh` crate), so they compile and
+//! are unit-tested on any build — including the default `dds` build, where they
+//! are otherwise unused.
 #![allow(dead_code)] // spec modules are unused on the `dds` build
 
 // E2 — backend-neutral wire-format spec (pure; compiled on every build).

@@ -5,8 +5,8 @@
 //! 128-bit XXH3 hash of that entity's liveliness key string, laid out as
 //! `gid[0..8] = low64`, `gid[8..16] = high64`, each in little-endian order.
 //!
-//! `u128::to_le_bytes()` produces exactly that layout (least-significant 8 bytes
-//! = `low64` LE, next 8 = `high64` LE), so the mapping is a single call.
+//! `u128::to_le_bytes()` produces exactly that layout (least-significant 8
+//! bytes = `low64` LE, next 8 = `high64` LE), so the mapping is a single call.
 //!
 //! Byte-for-byte parity with `rmw_zenoh`'s "simplified" XXH3-128 is asserted by
 //! live interop; this module fixes the layout and determinism.

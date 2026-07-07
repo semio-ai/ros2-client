@@ -6,8 +6,8 @@
 //! * **Data-plane topic/service keys** — `<domain>/<name>/<type>/<type_hash>`,
 //!   with the *real* namespace slashes preserved in the name.
 //! * **Liveliness (discovery) keys** — under the `@ros2_lv` admin space, with
-//!   the name **mangled** (`/`→`%`, empty→`%`) because Zenoh liveliness keys may
-//!   not contain empty chunks.
+//!   the name **mangled** (`/`→`%`, empty→`%`) because Zenoh liveliness keys
+//!   may not contain empty chunks.
 //!
 //! This module is pure string manipulation and carries no dependency on the
 //! `zenoh` crate, so it is unit-tested on every build.
@@ -71,10 +71,11 @@ fn strip_slashes(fq_name: &str) -> &str {
 /// Build a data-plane topic (or service) key expression:
 /// `<domain>/<name>/<type>/<type_hash>`.
 ///
-/// `fq_name` is the fully-qualified topic/service name (leading/trailing slashes
-/// are stripped, interior slashes kept). `type_name` is the DDS-form type name
-/// (e.g. `std_msgs::msg::dds_::String_`), `type_hash` the REP-2016 `RIHS01_…`
-/// string (or a wildcard for liberal receivers, see [`super::type_hash`]).
+/// `fq_name` is the fully-qualified topic/service name (leading/trailing
+/// slashes are stripped, interior slashes kept). `type_name` is the DDS-form
+/// type name (e.g. `std_msgs::msg::dds_::String_`), `type_hash` the REP-2016
+/// `RIHS01_…` string (or a wildcard for liberal receivers, see
+/// [`super::type_hash`]).
 pub fn topic_keyexpr(domain_id: u16, fq_name: &str, type_name: &str, type_hash: &str) -> String {
   format!(
     "{}/{}/{}/{}",
@@ -120,9 +121,10 @@ pub fn node_liveliness_keyexpr(domain_id: u16, ids: &EntityIds) -> String {
 
 /// Build a publisher / subscription / service liveliness key.
 ///
-/// `qualified_name` is the fully-qualified topic/service name (e.g. `/chatter`);
-/// it is mangled. `qos` is the compact QoS encoding string (opaque here — see
-/// the QoS-encoding work item; callers pass the already-encoded value).
+/// `qualified_name` is the fully-qualified topic/service name (e.g.
+/// `/chatter`); it is mangled. `qos` is the compact QoS encoding string (opaque
+/// here — see the QoS-encoding work item; callers pass the already-encoded
+/// value).
 #[allow(clippy::too_many_arguments)]
 pub fn entity_liveliness_keyexpr(
   domain_id: u16,
@@ -226,7 +228,8 @@ mod tests {
 
   #[test]
   fn subscription_liveliness_key_matches_example() {
-    // @ros2_lv/0/aac.../0/10/MS/%/%/listener/%chatter/std_msgs::msg::dds_::String_/<hash>/::,10:,:,:,,
+    // @ros2_lv/0/aac.../0/10/MS/%/%/listener/%chatter/std_msgs::msg::dds_::String_/
+    // <hash>/::,10:,:,:,,
     let ids = EntityIds {
       session_id: "aac3178e146ba6f1fc6e6a4085e77f21",
       node_id: 0,
