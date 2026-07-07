@@ -27,6 +27,10 @@ pub(crate) mod type_hash;
 #[cfg(feature = "zenoh")]
 pub(crate) mod attachment;
 
+// E2/E4 — CDR message (de)serialization needs `cdr-encoding`.
+#[cfg(feature = "zenoh")]
+pub(crate) mod cdr;
+
 // E3 — Zenoh session / Context (needs the `zenoh` crate).
 #[cfg(feature = "zenoh")]
 pub(crate) mod context;
