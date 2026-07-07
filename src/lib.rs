@@ -100,6 +100,8 @@ pub mod names;
 pub mod parameters;
 #[doc(hidden)]
 pub mod pubsub;
+/// Backend-neutral Quality-of-Service profile.
+pub mod qos;
 pub mod rcl_interfaces;
 pub mod ros_time;
 pub mod rosout;
@@ -135,6 +137,8 @@ pub use node::*;
 #[doc(inline)]
 pub use parameters::{Parameter, ParameterValue};
 #[doc(inline)]
+pub use qos::QosProfile;
+#[doc(inline)]
 pub use pubsub::*;
 #[doc(inline)]
 pub use service::{AService, Client, Server, Service, ServiceMapping};
@@ -160,7 +164,9 @@ pub mod ros2 {
   pub use crate::log::LogLevel;
   // TODO: What to do about SecurityError (exists based on feature "security")
   pub use crate::names::Name; // import Name as ros2::Name if there is clash
-                              // otherwise
+  // otherwise
+  // Backend-neutral QoS (available on both backends).
+  pub use crate::qos::QosProfile;
 }
 
 /// Re-export of the entire RustDDS,
