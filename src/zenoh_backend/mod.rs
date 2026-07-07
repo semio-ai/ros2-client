@@ -10,25 +10,35 @@
 //! - GID → XXH3-128 of the entity's liveliness key
 //!
 //! The submodules are populated by the E2–E6 work items (see
-//! `docs/zenoh_study/refactoring_plan.md`). They are declared here as they land
-//! so the backend grows behind a single `#[cfg(feature = "zenoh")]` boundary.
+//! `docs/zenoh_study/refactoring_plan.md`).
+//!
+//! The "wire-format spec" submodules below ([`keyexpr`], [`type_hash`], [`gid`])
+//! are pure (no dependency on the `zenoh` crate), so they compile and are
+//! unit-tested on any build — including the default `dds` build, where they are
+//! otherwise unused.
+#![allow(dead_code)] // spec modules are unused on the `dds` build
 
-// E2 — Zenoh wire primitives (keyexpr / attachment / type-hash / gid / CDR).
-// pub(crate) mod keyexpr;
+// E2 — backend-neutral wire-format spec (pure; compiled on every build).
+pub(crate) mod gid;
+pub(crate) mod keyexpr;
+pub(crate) mod type_hash;
+
+// E2 — attachment (de)serialization needs the `zenoh-ext` serializer.
+// #[cfg(feature = "zenoh")]
 // pub(crate) mod attachment;
-// pub(crate) mod type_hash;
-// pub(crate) mod gid;
-// pub(crate) mod cdr;
 
 // E3 — Zenoh session / Context.
+// #[cfg(feature = "zenoh")]
 // pub(crate) mod session;
 
 // E4 — Pub/Sub.
+// #[cfg(feature = "zenoh")]
 // pub(crate) mod pubsub;
 
 // E5 — Discovery: liveliness tokens + graph cache.
-// pub(crate) mod liveliness;
+// #[cfg(feature = "zenoh")]
 // pub(crate) mod graph_cache;
 
 // E6 — Services over queryable / get.
+// #[cfg(feature = "zenoh")]
 // pub(crate) mod service;

@@ -111,7 +111,11 @@ mod wide_string;
 pub(crate) mod node;
 
 /// Zenoh middleware backend (cargo feature `zenoh`).
-#[cfg(feature = "zenoh")]
+///
+/// The module is compiled unconditionally so its backend-neutral "wire-format
+/// spec" submodules (key expressions, type hashes, GID) can be unit-tested on
+/// any build. Submodules that depend on the `zenoh` crate are gated behind
+/// `#[cfg(feature = "zenoh")]` inside the module.
 pub(crate) mod zenoh_backend;
 
 // Re-exports from crate root to simplify usage
