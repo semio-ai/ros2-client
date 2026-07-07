@@ -25,7 +25,7 @@ categories = ["network-programming", "science::robotics"]
 #   cargo build --no-default-features --features zenoh
 # ---------------------------------------------------------------------------
 dds   = ["dep:rustdds"]
-zenoh = ["dep:zenoh", "dep:zenoh-ext"]
+zenoh = ["dep:zenoh", "dep:zenoh-ext", "dep:cdr-encoding", "dep:byteorder"]
 
 # declare the existence of "security" feature (Secure ROS 2 support).
 # Security is a DDS-only capability (RustDDS security); it implies `dds`.
@@ -79,6 +79,10 @@ rustdds = { version = "0.13", optional = true } # release setting
 # (see docs/zenoh_study/research/zenoh_api.md).
 zenoh     = { version = "1", optional = true, features = ["unstable"] }
 zenoh-ext = { version = "1", optional = true, features = ["unstable"] }
+# Standalone CDR (de)serialization for the Zenoh backend (the DDS backend gets
+# CDR via RustDDS). Same author as RustDDS, so byte output matches (ADR-0003).
+cdr-encoding = { version = "0.10", optional = true }
+byteorder = { version = "1", optional = true } # CDR byte-order selector
 
 mio = "^0.6.23"
 mio-extras = "2.0.6"
