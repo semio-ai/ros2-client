@@ -47,6 +47,23 @@
 //!   // --> smol::block_on( subscription_stream );
 //! ```
 
+// ---------------------------------------------------------------------------
+// Middleware backend selection. Exactly one of `dds` (default) or `zenoh` must
+// be enabled. See
+// docs/decisions/0002-dual-backend-compile-time-feature-selection.md
+// ---------------------------------------------------------------------------
+#[cfg(all(feature = "dds", feature = "zenoh"))]
+compile_error!(
+  "features `dds` and `zenoh` are mutually exclusive: enable exactly one. \
+   To use the Zenoh backend, build with `--no-default-features --features zenoh`."
+);
+#[cfg(not(any(feature = "dds", feature = "zenoh")))]
+compile_error!(
+  "no middleware backend selected: enable exactly one of `dds` (default) or \
+   `zenoh`. You likely used `--no-default-features` without `--features dds` \
+   or `--features zenoh`."
+);
+
 #[macro_use]
 extern crate lazy_static;
 
@@ -94,6 +111,14 @@ mod wide_string;
 #[doc(hidden)]
 pub(crate) mod node;
 
+/// Zenoh middleware backend (cargo feature `zenoh`).
+///
+/// The module is compiled unconditionally so its backend-neutral "wire-format
+/// spec" submodules (key expressions, type hashes, GID) can be unit-tested on
+/// any build. Submodules that depend on the `zenoh` crate are gated behind
+/// `#[cfg(feature = "zenoh")]` inside the module.
+pub(crate) mod zenoh_backend;
+
 // Re-exports from crate root to simplify usage
 #[doc(inline)]
 pub use context::*;
@@ -124,8 +149,12 @@ pub use rosout::{NodeLoggingHandle, RosoutRaw};
 
 /// Module for stuff we do not want to export from top level;
 pub mod ros2 {
+  // RustDDS-derived re-exports are only available on the `dds` backend.
+  // The `zenoh` backend provides owned equivalents (see issue E1 / ADR-0004).
+  #[cfg(feature = "dds")]
   pub use rustdds::{qos::policy, Duration, QosPolicies, QosPolicyBuilder, Timestamp};
   //TODO: re-export RustDDS error types until ros2-client defines its own
+  #[cfg(feature = "dds")]
   pub use rustdds::dds::{CreateError, ReadError, WaitError, WriteError};
 
   pub use crate::log::LogLevel;
@@ -136,4 +165,7 @@ pub mod ros2 {
 
 /// Re-export of the entire RustDDS,
 /// to provide access to the same version that ros2-client uses.
+///
+/// Only available on the `dds` backend.
+#[cfg(feature = "dds")]
 pub use rustdds;

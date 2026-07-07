@@ -15,9 +15,23 @@ categories = ["network-programming", "science::robotics"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [features]
-# declare the existence of "security" feature (Secure ROS 2 support)
-security = [ 
-  "rustdds/security" # Requires "security" in RustDDS also
+
+# ---------------------------------------------------------------------------
+# Middleware backend selection (mutually exclusive). See
+# docs/decisions/0002-dual-backend-compile-time-feature-selection.md
+#
+# Exactly one of `dds` (default) or `zenoh` must be enabled; lib.rs emits a
+# compile_error! if both or neither are active. Build the Zenoh backend with:
+#   cargo build --no-default-features --features zenoh
+# ---------------------------------------------------------------------------
+dds   = ["dep:rustdds"]
+zenoh = ["dep:zenoh", "dep:zenoh-ext"]
+
+# declare the existence of "security" feature (Secure ROS 2 support).
+# Security is a DDS-only capability (RustDDS security); it implies `dds`.
+security = [
+  "dds",
+  "rustdds/security", # Requires "security" in RustDDS also
 ]
 
 # ROS 2 distribution selection.
@@ -48,14 +62,23 @@ jazzy    = ["iron"]
 kilted   = ["jazzy"]
 lyrical  = ["kilted"]
 
-default = ["jazzy"]
+# Default build: the DDS backend on the jazzy distribution.
+default = ["dds", "jazzy"]
 
 
 [dependencies]
 
+# RustDDS backend (feature `dds`). Optional so the `zenoh` backend can be built
+# without pulling RustDDS in.
 # rustdds = {  path = "../RustDDS"  } # dev setting
 # rustdds = {   git = "https://github.com/Atostek/RustDDS.git" }
-rustdds = {  version = "0.13"  } # release setting
+rustdds = { version = "0.13", optional = true } # release setting
+
+# Zenoh backend (feature `zenoh`). Optional; only compiled when `zenoh` is
+# enabled. `unstable` is required for liveliness, advanced pub/sub and matching
+# (see docs/zenoh_study/research/zenoh_api.md).
+zenoh     = { version = "1", optional = true, features = ["unstable"] }
+zenoh-ext = { version = "1", optional = true, features = ["unstable"] }
 
 mio = "^0.6.23"
 mio-extras = "2.0.6"
@@ -79,6 +102,12 @@ bstr = "1.6.2"
 widestring = "1.0" # msggen
 libc = "0.2.153"
 tracing = "0.1.41"
+
+# Entity GID for the Zenoh backend is XXH3-128 of the liveliness key
+# (docs/decisions/0008). The algorithm is backend-neutral spec code, so the
+# dependency is unconditional (it is tiny and pure-Rust) to keep the wire-format
+# modules unit-testable on any build.
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
 
 [dev-dependencies]
 log = "0.4"
