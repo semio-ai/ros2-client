@@ -24,8 +24,8 @@ pub(crate) mod keyexpr;
 pub(crate) mod type_hash;
 
 // E2 — attachment (de)serialization needs the `zenoh-ext` serializer.
-// #[cfg(feature = "zenoh")]
-// pub(crate) mod attachment;
+#[cfg(feature = "zenoh")]
+pub(crate) mod attachment;
 
 // E3 — Zenoh session / Context (needs the `zenoh` crate).
 #[cfg(feature = "zenoh")]
