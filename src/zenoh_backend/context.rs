@@ -348,6 +348,78 @@ mod tests {
     assert!(ctx_b.node_names().contains(&"/talker".to_string()));
   }
 
+  // A client-mode config that reaches its session only through a Zenoh router
+  // (no direct peer link, no multicast) — the `rmw_zenoh` / ADR-0009 topology.
+  fn client_config(router_port: u16) -> Config {
+    let mut c = Config::default();
+    c.insert_json5("mode", "\"client\"").unwrap();
+    c.insert_json5("scouting/multicast/enabled", "false")
+      .unwrap();
+    c.insert_json5(
+      "connect/endpoints",
+      &format!("[\"tcp/127.0.0.1:{router_port}\"]"),
+    )
+    .unwrap();
+    c
+  }
+
+  // End-to-end through a real in-process Zenoh router: two client-mode contexts
+  // that can only see each other via the router exchange a message on /chatter.
+  // This exercises the router path (ADR-0009) that the peer-mode loopback tests
+  // do not.
+  #[test]
+  fn pub_sub_through_router() {
+    let router_port = 17540;
+    let mut router_conf = Config::default();
+    router_conf.insert_json5("mode", "\"router\"").unwrap();
+    router_conf
+      .insert_json5("scouting/multicast/enabled", "false")
+      .unwrap();
+    router_conf
+      .insert_json5(
+        "listen/endpoints",
+        &format!("[\"tcp/127.0.0.1:{router_port}\"]"),
+      )
+      .unwrap();
+    let _router = zenoh::open(router_conf).wait().expect("start zenoh router");
+
+    let sub_ctx =
+      Context::with_options(ContextOptions::new().zenoh_config(client_config(router_port)))
+        .expect("subscriber client context");
+    let pub_ctx =
+      Context::with_options(ContextOptions::new().zenoh_config(client_config(router_port)))
+        .expect("publisher client context");
+
+    let sub_node = sub_ctx.new_node(NodeName::new("/", "rsub").unwrap(), NodeOptions::new());
+    let pub_node = pub_ctx.new_node(NodeName::new("/", "rpub").unwrap(), NodeOptions::new());
+
+    let make_topic = |n: &crate::Node| {
+      n.create_topic(
+        &Name::new("/", "chatter").unwrap(),
+        MessageTypeName::new("std_msgs", "String"),
+        &QosProfile::default(),
+      )
+    };
+    let sub: crate::Subscription<String> = sub_node
+      .create_subscription(&make_topic(&sub_node), None)
+      .unwrap();
+    let publisher: Publisher<String> = pub_node
+      .create_publisher(&make_topic(&pub_node), None)
+      .unwrap();
+
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut got = None;
+    while Instant::now() < deadline {
+      publisher.publish("via router".to_string()).unwrap();
+      if let Some((msg, _)) = sub.try_take().unwrap() {
+        got = Some(msg);
+        break;
+      }
+      std::thread::sleep(Duration::from_millis(100));
+    }
+    assert_eq!(got.as_deref(), Some("via router"));
+  }
+
   #[test]
   fn wait_for_publisher_resolves_on_discovery() {
     let a_port = 17527;
