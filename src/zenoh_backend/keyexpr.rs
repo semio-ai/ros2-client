@@ -159,6 +159,90 @@ pub fn graph_cache_keyexpr(domain_id: u16) -> String {
   format!("{ADMIN_SPACE}/{domain_id}/**")
 }
 
+/// A liveliness token parsed back into its components (the inverse of
+/// [`node_liveliness_keyexpr`] / [`entity_liveliness_keyexpr`]). Names are
+/// demangled (`%`→`/`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ParsedEntity {
+  /// ROS domain id.
+  pub domain_id: u16,
+  /// Zenoh session id (hex).
+  pub zid: String,
+  /// Node id within the session.
+  pub node_id: u64,
+  /// Entity id within the node (equals `node_id` for a node token).
+  pub entity_id: u64,
+  /// Entity kind.
+  pub kind: EntityKind,
+  /// Node namespace (demangled), e.g. `/` or `/robot1`.
+  pub namespace: String,
+  /// Node base name.
+  pub node_name: String,
+  /// Topic/service name (demangled), for non-node entities.
+  pub topic_name: Option<String>,
+  /// DDS-form type name, for non-node entities.
+  pub type_name: Option<String>,
+  /// REP-2016 type hash, for non-node entities.
+  pub type_hash: Option<String>,
+  /// Compact QoS string, for non-node entities.
+  pub qos: Option<String>,
+}
+
+fn parse_kind(code: &str) -> Option<EntityKind> {
+  Some(match code {
+    "NN" => EntityKind::Node,
+    "MP" => EntityKind::Publisher,
+    "MS" => EntityKind::Subscription,
+    "SS" => EntityKind::ServiceServer,
+    "SC" => EntityKind::ServiceClient,
+    _ => return None,
+  })
+}
+
+/// Parse a liveliness token key expression into a [`ParsedEntity`], or `None`
+/// if it is not a well-formed `@ros2_lv` token.
+pub fn parse_liveliness_key(key: &str) -> Option<ParsedEntity> {
+  let p: Vec<&str> = key.split('/').collect();
+  if p.first() != Some(&ADMIN_SPACE) || p.len() < 9 {
+    return None;
+  }
+  let domain_id = p[1].parse().ok()?;
+  let zid = p[2].to_owned();
+  let node_id = p[3].parse().ok()?;
+  let entity_id = p[4].parse().ok()?;
+  let kind = parse_kind(p[5])?;
+  let namespace = demangle(p[7]); // p[6] is the enclave (unused here)
+  let node_name = demangle(p[8]);
+
+  let (topic_name, type_name, type_hash, qos) = if kind == EntityKind::Node {
+    (None, None, None, None)
+  } else {
+    if p.len() < 13 {
+      return None;
+    }
+    (
+      Some(demangle(p[9])),
+      Some(p[10].to_owned()),
+      Some(p[11].to_owned()),
+      Some(p[12].to_owned()),
+    )
+  };
+
+  Some(ParsedEntity {
+    domain_id,
+    zid,
+    node_id,
+    entity_id,
+    kind,
+    namespace,
+    node_name,
+    topic_name,
+    type_name,
+    type_hash,
+    qos,
+  })
+}
+
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
@@ -269,5 +353,61 @@ mod tests {
   fn graph_cache_key() {
     assert_eq!(graph_cache_keyexpr(0), "@ros2_lv/0/**");
     assert_eq!(graph_cache_keyexpr(42), "@ros2_lv/42/**");
+  }
+
+  #[test]
+  fn parse_node_token() {
+    let ids = EntityIds {
+      session_id: "aac3178e146ba6f1fc6e6a4085e77f21",
+      node_id: 3,
+      entity_id: 3,
+      enclave: "",
+      namespace: "/robot1",
+      node_name: "talker",
+    };
+    let key = node_liveliness_keyexpr(0, &ids);
+    let e = parse_liveliness_key(&key).expect("parse node token");
+    assert_eq!(e.kind, EntityKind::Node);
+    assert_eq!(e.domain_id, 0);
+    assert_eq!(e.node_id, 3);
+    assert_eq!(e.entity_id, 3);
+    assert_eq!(e.namespace, "/robot1");
+    assert_eq!(e.node_name, "talker");
+    assert_eq!(e.topic_name, None);
+  }
+
+  #[test]
+  fn parse_entity_token_roundtrip() {
+    let ids = EntityIds {
+      session_id: "aac3178e146ba6f1fc6e6a4085e77f21",
+      node_id: 0,
+      entity_id: 10,
+      enclave: "",
+      namespace: "",
+      node_name: "listener",
+    };
+    let key = entity_liveliness_keyexpr(
+      0,
+      &ids,
+      EntityKind::Subscription,
+      "/chatter",
+      "std_msgs::msg::dds_::String_",
+      STRING_HASH,
+      "::,10:,:,:,,",
+    );
+    let e = parse_liveliness_key(&key).expect("parse entity token");
+    assert_eq!(e.kind, EntityKind::Subscription);
+    assert_eq!(e.entity_id, 10);
+    assert_eq!(e.node_name, "listener");
+    assert_eq!(e.topic_name.as_deref(), Some("/chatter"));
+    assert_eq!(e.type_name.as_deref(), Some("std_msgs::msg::dds_::String_"));
+    assert_eq!(e.type_hash.as_deref(), Some(STRING_HASH));
+    assert_eq!(e.qos.as_deref(), Some("::,10:,:,:,,"));
+  }
+
+  #[test]
+  fn parse_rejects_non_tokens() {
+    assert!(parse_liveliness_key("0/chatter/std_msgs::msg::dds_::String_/hash").is_none());
+    assert!(parse_liveliness_key("@ros2_lv/0").is_none());
   }
 }

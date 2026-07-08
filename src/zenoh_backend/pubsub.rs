@@ -15,6 +15,7 @@ use std::{
 use serde::{de::DeserializeOwned, Serialize};
 use zenoh::{
   handlers::FifoChannelHandler,
+  liveliness::LivelinessToken,
   pubsub::{Publisher as ZenohPublisher, Subscriber},
   sample::Sample,
   Wait,
@@ -101,15 +102,22 @@ pub struct Publisher<M> {
   zenoh_publisher: ZenohPublisher<'static>,
   seq: AtomicI64,
   source_gid: [u8; 16],
+  // Kept alive so the entity stays discoverable; dropped => token undeclared.
+  _liveliness_token: Option<LivelinessToken>,
   phantom: PhantomData<fn() -> M>,
 }
 
 impl<M: Serialize> Publisher<M> {
-  pub(crate) fn new(zenoh_publisher: ZenohPublisher<'static>, source_gid: [u8; 16]) -> Self {
+  pub(crate) fn new(
+    zenoh_publisher: ZenohPublisher<'static>,
+    source_gid: [u8; 16],
+    liveliness_token: Option<LivelinessToken>,
+  ) -> Self {
     Self {
       zenoh_publisher,
       seq: AtomicI64::new(0),
       source_gid,
+      _liveliness_token: liveliness_token,
       phantom: PhantomData,
     }
   }
@@ -157,13 +165,19 @@ impl<M: Serialize> Publisher<M> {
 /// A ROS 2 subscription over Zenoh.
 pub struct Subscription<M> {
   zenoh_subscriber: Subscriber<FifoChannelHandler<Sample>>,
+  // Kept alive so the entity stays discoverable; dropped => token undeclared.
+  _liveliness_token: Option<LivelinessToken>,
   phantom: PhantomData<fn() -> M>,
 }
 
 impl<M: DeserializeOwned> Subscription<M> {
-  pub(crate) fn new(zenoh_subscriber: Subscriber<FifoChannelHandler<Sample>>) -> Self {
+  pub(crate) fn new(
+    zenoh_subscriber: Subscriber<FifoChannelHandler<Sample>>,
+    liveliness_token: Option<LivelinessToken>,
+  ) -> Self {
     Self {
       zenoh_subscriber,
+      _liveliness_token: liveliness_token,
       phantom: PhantomData,
     }
   }
