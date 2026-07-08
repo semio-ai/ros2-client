@@ -194,6 +194,9 @@ pub use zenoh_backend::node::{Node, NodeOptions, Topic};
 #[cfg(feature = "zenoh")]
 #[doc(inline)]
 pub use zenoh_backend::pubsub::{MessageInfo, Publisher, Subscription};
+#[cfg(feature = "zenoh")]
+#[doc(inline)]
+pub use zenoh_backend::service::{Client, RmwRequestId, Server};
 
 /// Module for stuff we do not want to export from top level;
 pub mod ros2 {
