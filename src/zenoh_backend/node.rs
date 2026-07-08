@@ -14,10 +14,12 @@ use super::{
   context::Context,
   gid, keyexpr,
   pubsub::{Publisher, Subscription},
-  qos_encoding, type_hash,
+  qos_encoding,
+  service::{Client, Server},
+  type_hash,
 };
 use crate::{
-  names::{MessageTypeName, Name, NodeName},
+  names::{MessageTypeName, Name, NodeName, ServiceTypeName},
   qos::QosProfile,
 };
 
@@ -187,13 +189,33 @@ impl Node {
     Ok(Subscription::new(zenoh_subscriber, token))
   }
 
-  /// Build the liveliness key for an entity of this node, including the compact
-  /// QoS encoding.
+  /// Build the liveliness key for a pub/sub entity of this node.
   fn entity_liveliness_key(
     &self,
     entity_id: u64,
     kind: keyexpr::EntityKind,
     topic: &Topic,
+    hash: &str,
+    qos: &QosProfile,
+  ) -> String {
+    self.liveliness_key(
+      entity_id,
+      kind,
+      &topic.fully_qualified_name,
+      &topic.dds_type_name,
+      hash,
+      qos,
+    )
+  }
+
+  /// Build the liveliness key for any entity of this node, including the
+  /// compact QoS encoding.
+  fn liveliness_key(
+    &self,
+    entity_id: u64,
+    kind: keyexpr::EntityKind,
+    fqn: &str,
+    dds_type: &str,
     hash: &str,
     qos: &QosProfile,
   ) -> String {
@@ -209,11 +231,80 @@ impl Node {
       self.context.domain_id(),
       &ids,
       kind,
-      &topic.fully_qualified_name,
-      &topic.dds_type_name,
+      fqn,
+      dds_type,
       hash,
       &qos_encoding::encode_qos(qos),
     )
+  }
+
+  /// Create a service client for `service` of the given service type.
+  pub fn create_client<Req: serde::Serialize, Resp: DeserializeOwned>(
+    &self,
+    service: &Name,
+    service_type: &ServiceTypeName,
+  ) -> zenoh::Result<Client<Req, Resp>> {
+    let fqn = resolve_fqn(service, &self.node_name);
+    let dds_type = service_type.dds_service_type();
+    let domain = self.context.domain_id();
+    // The client `get`s on the concrete service key (real hash if known, else
+    // placeholder) so it matches the server's concrete queryable. A `get`
+    // selector must match the queryable's key; for known interop types this is
+    // the real RIHS01 hash and so also matches C++ servers.
+    let hash = type_hash::sender_hash(&dds_type);
+    let selector = keyexpr::topic_keyexpr(domain, &fqn, &dds_type, hash);
+
+    let entity_id = self.next_entity_id.fetch_add(1, Ordering::Relaxed);
+    let liveliness_key = self.liveliness_key(
+      entity_id,
+      keyexpr::EntityKind::ServiceClient,
+      &fqn,
+      &dds_type,
+      hash,
+      &QosProfile::default(),
+    );
+    let client_gid = gid::gid_from_liveliness_key(&liveliness_key);
+    let token = declare_liveliness(&self.context, liveliness_key);
+
+    Ok(Client::new(
+      self.context.session().clone(),
+      selector,
+      client_gid,
+      token,
+    ))
+  }
+
+  /// Create a service server for `service` of the given service type.
+  pub fn create_server<Req: DeserializeOwned, Resp: serde::Serialize>(
+    &self,
+    service: &Name,
+    service_type: &ServiceTypeName,
+  ) -> zenoh::Result<Server<Req, Resp>> {
+    let fqn = resolve_fqn(service, &self.node_name);
+    let dds_type = service_type.dds_service_type();
+    let domain = self.context.domain_id();
+    let hash = type_hash::sender_hash(&dds_type);
+    // The server's queryable is concrete (real-or-placeholder hash).
+    let key = keyexpr::topic_keyexpr(domain, &fqn, &dds_type, hash);
+    let queryable = self
+      .context
+      .session()
+      .declare_queryable(key)
+      .complete(true)
+      .wait()?;
+
+    let entity_id = self.next_entity_id.fetch_add(1, Ordering::Relaxed);
+    let liveliness_key = self.liveliness_key(
+      entity_id,
+      keyexpr::EntityKind::ServiceServer,
+      &fqn,
+      &dds_type,
+      hash,
+      &QosProfile::default(),
+    );
+    let token = declare_liveliness(&self.context, liveliness_key);
+
+    Ok(Server::new(queryable, token))
   }
 }
 

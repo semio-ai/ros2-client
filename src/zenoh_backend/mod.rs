@@ -43,6 +43,10 @@ pub(crate) mod node;
 #[cfg(feature = "zenoh")]
 pub(crate) mod pubsub;
 
+// E6 — Services over queryable/get (need the `zenoh` crate).
+#[cfg(feature = "zenoh")]
+pub(crate) mod service;
+
 // E4 — Pub/Sub.
 // #[cfg(feature = "zenoh")]
 // pub(crate) mod pubsub;
