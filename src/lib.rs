@@ -117,14 +117,14 @@ pub mod message;
 #[cfg(feature = "dds")]
 pub mod message_info;
 pub mod names;
-#[cfg(feature = "dds")]
+/// Rust-like representation of ROS 2 Parameters (backend-neutral).
 pub mod parameters;
 #[doc(hidden)]
 #[cfg(feature = "dds")]
 pub mod pubsub;
 /// Backend-neutral Quality-of-Service profile.
 pub mod qos;
-#[cfg(feature = "dds")]
+/// `rcl_interfaces` message/service payload types (backend-neutral).
 pub mod rcl_interfaces;
 pub mod ros_time;
 #[cfg(feature = "dds")]
@@ -163,7 +163,6 @@ pub use message_info::MessageInfo;
 #[cfg(feature = "dds")]
 #[doc(inline)]
 pub use node::*;
-#[cfg(feature = "dds")]
 #[doc(inline)]
 pub use parameters::{Parameter, ParameterValue};
 #[doc(inline)]
@@ -200,6 +199,9 @@ pub use zenoh_backend::service::{Client, RmwRequestId, Server};
 #[cfg(feature = "zenoh")]
 #[doc(inline)]
 pub use zenoh_backend::action::{ActionClient, ActionServer, GoalId};
+#[cfg(feature = "zenoh")]
+#[doc(inline)]
+pub use zenoh_backend::parameters::{ParameterClient, ParameterEvent, ParameterServer};
 
 /// Module for stuff we do not want to export from top level;
 pub mod ros2 {
