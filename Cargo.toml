@@ -10,7 +10,14 @@ keywords = ["network","protocol","dds","rtps"]
 license = "Apache-2.0"
 homepage = "https://atostek.com/en/products/rustdds/"  
 repository = "https://github.com/Atostek/ros2-client/"
-categories = ["network-programming", "science::robotics"] 
+categories = ["network-programming", "science::robotics"]
+
+# Examples are declared explicitly (below) rather than auto-discovered, so each
+# can carry `required-features`. The bundled examples use the DDS backend API;
+# they are gated on `dds` so a `--no-default-features --features zenoh` build of
+# `--examples` skips them instead of failing. The `zenoh` backend has its own
+# example, `zenoh_demo`.
+autoexamples = false
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -128,3 +135,106 @@ smol = "2.0"
 async-io = "2.2.0"
 async-ctrlc = "1.2"
 tokio = { version = "1", features=["rt", "macros", "time", "sync"]}
+
+
+# ---------------------------------------------------------------------------
+# Examples
+# ---------------------------------------------------------------------------
+# DDS-backend examples (the default build). Gated on `dds` so they are skipped
+# on a `zenoh` build rather than failing to compile.
+
+[[example]]
+name = "talker"
+path = "examples/talker/main.rs"
+required-features = ["dds"]
+
+[[example]]
+name = "listener"
+path = "examples/listener/main.rs"
+required-features = ["dds"]
+
+[[example]]
+name = "async_talker"
+path = "examples/async_talker/main.rs"
+required-features = ["dds"]
+
+[[example]]
+name = "async_listener"
+path = "examples/async_listener/main.rs"
+required-features = ["dds"]
+
+[[example]]
+name = "async_smart_talker"
+path = "examples/async_smart_talker/main.rs"
+required-features = ["dds"]
+
+[[example]]
+name = "async_service_client"
+path = "examples/async_service_client/main.rs"
+required-features = ["dds"]
+
+[[example]]
+name = "async_service_server"
+path = "examples/async_service_server/main.rs"
+required-features = ["dds"]
+
+[[example]]
+name = "ros2_service_client"
+path = "examples/ros2_service_client/main.rs"
+required-features = ["dds"]
+
+[[example]]
+name = "ros2_service_server"
+path = "examples/ros2_service_server/main.rs"
+required-features = ["dds"]
+
+[[example]]
+name = "minimal_action_client"
+path = "examples/minimal_action_client/main.rs"
+required-features = ["dds"]
+
+[[example]]
+name = "minimal_action_server"
+path = "examples/minimal_action_server/main.rs"
+required-features = ["dds"]
+
+[[example]]
+name = "concurrent_action_server"
+path = "examples/concurrent_action_server/main.rs"
+required-features = ["dds"]
+
+[[example]]
+name = "client_get_parameters"
+path = "examples/client_get_parameters/main.rs"
+required-features = ["dds"]
+
+[[example]]
+name = "client_list_parameters"
+path = "examples/client_list_parameters/main.rs"
+required-features = ["dds"]
+
+[[example]]
+name = "discovery_listener"
+path = "examples/discovery_listener/main.rs"
+required-features = ["dds"]
+
+[[example]]
+name = "time_broadcaster"
+path = "examples/time_broadcaster/main.rs"
+required-features = ["dds"]
+
+[[example]]
+name = "time_reporter"
+path = "examples/time_reporter/main.rs"
+required-features = ["dds"]
+
+[[example]]
+name = "turtle_teleop"
+path = "examples/turtle_teleop/main.rs"
+required-features = ["dds"]
+
+# Zenoh-backend example.
+[[example]]
+name = "zenoh_demo"
+path = "examples/zenoh_demo/main.rs"
+required-features = ["zenoh"]
