@@ -21,6 +21,7 @@
 // E2 — backend-neutral wire-format spec (pure; compiled on every build).
 pub(crate) mod gid;
 pub(crate) mod keyexpr;
+pub(crate) mod qos_encoding;
 pub(crate) mod type_hash;
 
 // E2 — attachment (de)serialization needs the `zenoh-ext` serializer.
