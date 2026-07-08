@@ -25,6 +25,12 @@ jobs:
       - name: clippy (zenoh)
         run: cargo clippy --no-default-features --features zenoh --lib --bins -- -D warnings
 
+      # The zenoh-backend example must compile (and lint clean). The DDS
+      # examples are gated on the `dds` feature (Cargo.toml `required-features`)
+      # and are skipped under this feature set.
+      - name: clippy examples (zenoh)
+        run: cargo clippy --no-default-features --features zenoh --examples -- -D warnings
+
       # `--lib` only: the crate-level doctest exercises the DDS API and is not
       # meant to compile under the zenoh backend. Serial to keep session ports
       # from contending.
