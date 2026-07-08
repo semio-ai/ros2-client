@@ -5,12 +5,19 @@
 //! entities. Discovery (liveliness tokens, graph), services, and actions land
 //! in E5/E6.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::{
+  sync::atomic::{AtomicU64, Ordering},
+  time::Duration,
+};
 
 use serde::{de::DeserializeOwned, Serialize};
 use zenoh::{liveliness::LivelinessToken, Wait};
 
 use super::{
+  action::{
+    ActionClient, ActionServer, FeedbackMessage, GetResultRequest, GetResultResponse,
+    SendGoalRequest, SendGoalResponse,
+  },
   context::Context,
   gid, keyexpr,
   pubsub::{Publisher, Subscription},
@@ -19,9 +26,14 @@ use super::{
   type_hash,
 };
 use crate::{
-  names::{MessageTypeName, Name, NodeName, ServiceTypeName},
+  names::{ActionTypeName, MessageTypeName, Name, NodeName, ServiceTypeName},
   qos::QosProfile,
 };
+
+/// The `get_result` action service is queried with a long timeout, mirroring
+/// rmw_zenoh's `**/_action/get_result/**` heuristic (a goal may take a long
+/// time to finish). Bounded to avoid indefinite hangs; production may raise it.
+const GET_RESULT_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Options for creating a [`Node`] on the Zenoh backend.
 ///
@@ -244,6 +256,15 @@ impl Node {
     service: &Name,
     service_type: &ServiceTypeName,
   ) -> zenoh::Result<Client<Req, Resp>> {
+    self.create_client_inner(service, service_type, None)
+  }
+
+  fn create_client_inner<Req: serde::Serialize, Resp: DeserializeOwned>(
+    &self,
+    service: &Name,
+    service_type: &ServiceTypeName,
+    timeout: Option<Duration>,
+  ) -> zenoh::Result<Client<Req, Resp>> {
     let fqn = resolve_fqn(service, &self.node_name);
     let dds_type = service_type.dds_service_type();
     let domain = self.context.domain_id();
@@ -266,11 +287,12 @@ impl Node {
     let client_gid = gid::gid_from_liveliness_key(&liveliness_key);
     let token = declare_liveliness(&self.context, liveliness_key);
 
-    Ok(Client::new(
+    Ok(Client::new_with_timeout(
       self.context.session().clone(),
       selector,
       client_gid,
       token,
+      timeout,
     ))
   }
 
@@ -306,6 +328,71 @@ impl Node {
 
     Ok(Server::new(queryable, token))
   }
+
+  /// Create an action client for `action` of the given action type.
+  pub fn create_action_client<G, R, F>(
+    &self,
+    action: &Name,
+    action_type: &ActionTypeName,
+  ) -> zenoh::Result<ActionClient<G, R, F>>
+  where
+    G: Serialize,
+    R: DeserializeOwned,
+    F: DeserializeOwned,
+  {
+    let fqn = resolve_fqn(action, &self.node_name);
+    let send_goal = self.create_client::<SendGoalRequest<G>, SendGoalResponse>(
+      &action_sub_name(&fqn, "send_goal")?,
+      &action_type.dds_action_service("_SendGoal"),
+    )?;
+    let get_result = self.create_client_inner::<GetResultRequest, GetResultResponse<R>>(
+      &action_sub_name(&fqn, "get_result")?,
+      &action_type.dds_action_service("_GetResult"),
+      Some(GET_RESULT_TIMEOUT),
+    )?;
+    let feedback_topic = self.create_topic(
+      &action_sub_name(&fqn, "feedback")?,
+      action_type.dds_action_topic("_FeedbackMessage"),
+      &QosProfile::default(),
+    );
+    let feedback = self.create_subscription::<FeedbackMessage<F>>(&feedback_topic, None)?;
+    Ok(ActionClient::new(send_goal, get_result, feedback))
+  }
+
+  /// Create an action server for `action` of the given action type.
+  pub fn create_action_server<G, R, F>(
+    &self,
+    action: &Name,
+    action_type: &ActionTypeName,
+  ) -> zenoh::Result<ActionServer<G, R, F>>
+  where
+    G: DeserializeOwned,
+    R: Serialize,
+    F: Serialize,
+  {
+    let fqn = resolve_fqn(action, &self.node_name);
+    let send_goal = self.create_server::<SendGoalRequest<G>, SendGoalResponse>(
+      &action_sub_name(&fqn, "send_goal")?,
+      &action_type.dds_action_service("_SendGoal"),
+    )?;
+    let get_result = self.create_server::<GetResultRequest, GetResultResponse<R>>(
+      &action_sub_name(&fqn, "get_result")?,
+      &action_type.dds_action_service("_GetResult"),
+    )?;
+    let feedback_topic = self.create_topic(
+      &action_sub_name(&fqn, "feedback")?,
+      action_type.dds_action_topic("_FeedbackMessage"),
+      &QosProfile::default(),
+    );
+    let feedback = self.create_publisher::<FeedbackMessage<F>>(&feedback_topic, None)?;
+    Ok(ActionServer::new(send_goal, get_result, feedback))
+  }
+}
+
+/// Build the absolute `Name` of an action sub-entity, e.g.
+/// `/fibonacci` + `send_goal` → `/fibonacci/_action/send_goal`.
+fn action_sub_name(action_fqn: &str, sub: &str) -> zenoh::Result<Name> {
+  Name::new(&format!("{action_fqn}/_action"), sub).map_err(|e| -> zenoh::Error { Box::new(e) })
 }
 
 /// Declare a liveliness token on `key`, best-effort: a failure logs a warning

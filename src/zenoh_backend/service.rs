@@ -84,10 +84,12 @@ fn gid_key(gid: [u8; 16]) -> u128 {
 /// A ROS 2 service client over Zenoh.
 pub struct Client<Req, Resp> {
   session: Session,
-  /// The `get` selector (service key with a wildcard type hash).
+  /// The `get` selector (concrete service key).
   selector: String,
   seq: AtomicI64,
   client_gid: [u8; 16],
+  /// Optional `get` timeout override (actions' `get_result` uses a long one).
+  timeout: Option<std::time::Duration>,
   _liveliness_token: Option<LivelinessToken>,
   phantom: PhantomData<fn(Req) -> Resp>,
 }
@@ -99,11 +101,22 @@ impl<Req: Serialize, Resp: DeserializeOwned> Client<Req, Resp> {
     client_gid: [u8; 16],
     liveliness_token: Option<LivelinessToken>,
   ) -> Self {
+    Self::new_with_timeout(session, selector, client_gid, liveliness_token, None)
+  }
+
+  pub(crate) fn new_with_timeout(
+    session: Session,
+    selector: String,
+    client_gid: [u8; 16],
+    liveliness_token: Option<LivelinessToken>,
+    timeout: Option<std::time::Duration>,
+  ) -> Self {
     Self {
       session,
       selector,
       seq: AtomicI64::new(0),
       client_gid,
+      timeout,
       _liveliness_token: liveliness_token,
       phantom: PhantomData,
     }
@@ -130,15 +143,17 @@ impl<Req: Serialize, Resp: DeserializeOwned> Client<Req, Resp> {
   /// Call the service and wait (blocking) for the first reply.
   pub fn call(&self, req: Req) -> Result<Resp, ServiceError> {
     let (payload, attachment) = self.request_bytes(&req)?;
-    let replies = self
+    let mut builder = self
       .session
       .get(&self.selector)
       .payload(payload)
       .attachment(attachment)
       .target(QueryTarget::AllComplete)
-      .consolidation(ConsolidationMode::None)
-      .wait()
-      .map_err(ServiceError::Zenoh)?;
+      .consolidation(ConsolidationMode::None);
+    if let Some(t) = self.timeout {
+      builder = builder.timeout(t);
+    }
+    let replies = builder.wait().map_err(ServiceError::Zenoh)?;
     while let Ok(reply) = replies.recv() {
       if let Some(res) = Self::decode_reply(&reply) {
         return res;
@@ -150,15 +165,17 @@ impl<Req: Serialize, Resp: DeserializeOwned> Client<Req, Resp> {
   /// Call the service and await the first reply.
   pub async fn async_call(&self, req: Req) -> Result<Resp, ServiceError> {
     let (payload, attachment) = self.request_bytes(&req)?;
-    let replies = self
+    let mut builder = self
       .session
       .get(&self.selector)
       .payload(payload)
       .attachment(attachment)
       .target(QueryTarget::AllComplete)
-      .consolidation(ConsolidationMode::None)
-      .await
-      .map_err(ServiceError::Zenoh)?;
+      .consolidation(ConsolidationMode::None);
+    if let Some(t) = self.timeout {
+      builder = builder.timeout(t);
+    }
+    let replies = builder.await.map_err(ServiceError::Zenoh)?;
     while let Ok(reply) = replies.recv_async().await {
       if let Some(res) = Self::decode_reply(&reply) {
         return res;
