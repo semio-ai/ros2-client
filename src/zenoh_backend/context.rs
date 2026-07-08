@@ -84,8 +84,16 @@ impl Context {
   }
 
   /// Open a new context with the given options.
+  ///
+  /// When no explicit [`ContextOptions::zenoh_config`] is given, the session
+  /// config is taken from the environment (see [`config_from_env`]): a JSON5
+  /// file named by `ZENOH_SESSION_CONFIG_URI`, or the built-in peer default,
+  /// with `ZENOH_CONFIG_OVERRIDE` applied on top. This matches `rmw_zenoh`.
   pub fn with_options(opt: ContextOptions) -> zenoh::Result<Context> {
-    let config = opt.config.unwrap_or_else(default_config);
+    let config = match opt.config {
+      Some(config) => config,
+      None => config_from_env()?,
+    };
     let session = zenoh::open(config).wait()?;
 
     // Build the ROS graph cache from liveliness tokens: subscribe over the whole
@@ -150,6 +158,52 @@ impl Context {
   }
 }
 
+/// Build a Zenoh [`Config`] from the environment, mirroring `rmw_zenoh`:
+///
+/// * `ZENOH_SESSION_CONFIG_URI` — if set (and non-empty), a path to a JSON5
+///   Zenoh config file loaded as the base config. Otherwise [`default_config`]
+///   is the base.
+/// * `ZENOH_CONFIG_OVERRIDE` — if set, a `;`-separated list of `key=value`
+///   JSON5 assignments applied on top of the base (e.g.
+///   `mode="client";connect/endpoints=["tcp/localhost:7447"]`).
+///
+/// A malformed override, or a config file that fails to load, is returned as an
+/// error rather than silently ignored.
+pub(crate) fn config_from_env() -> zenoh::Result<Config> {
+  let mut config = match std::env::var("ZENOH_SESSION_CONFIG_URI") {
+    Ok(uri) if !uri.trim().is_empty() => {
+      Config::from_file(uri.trim()).map_err(|e| -> zenoh::Error {
+        format!("failed to load Zenoh config from ZENOH_SESSION_CONFIG_URI={uri:?}: {e}").into()
+      })?
+    }
+    _ => default_config(),
+  };
+  if let Ok(overrides) = std::env::var("ZENOH_CONFIG_OVERRIDE") {
+    apply_config_overrides(&mut config, &overrides)?;
+  }
+  Ok(config)
+}
+
+/// Apply a `;`-separated list of `key=value` JSON5 assignments to `config`.
+/// Empty entries are ignored; an entry without `=` is an error.
+fn apply_config_overrides(config: &mut Config, overrides: &str) -> zenoh::Result<()> {
+  for entry in overrides
+    .split(';')
+    .map(str::trim)
+    .filter(|s| !s.is_empty())
+  {
+    let (key, value) = entry.split_once('=').ok_or_else(|| -> zenoh::Error {
+      format!("ZENOH_CONFIG_OVERRIDE entry is not `key=value`: {entry:?}").into()
+    })?;
+    config
+      .insert_json5(key.trim(), value.trim())
+      .map_err(|e| -> zenoh::Error {
+        format!("ZENOH_CONFIG_OVERRIDE failed for key {:?}: {e}", key.trim()).into()
+      })?;
+  }
+  Ok(())
+}
+
 /// Default Zenoh configuration for a ROS 2 peer.
 ///
 /// Peer mode, listening on an IPv4 loopback port and with multicast scouting
@@ -158,9 +212,10 @@ impl Context {
 /// (Zenoh's own default listens on `tcp/[::]:0`, which fails where IPv6 is
 /// unavailable, e.g. many CI runners).
 ///
-/// TODO(E3): load the full `rmw_zenoh` JSON5 profile (connect
-/// `tcp/localhost:7447`, gossip on, timestamping on) and honour
-/// `ZENOH_SESSION_CONFIG_URI` / `ZENOH_CONFIG_OVERRIDE`.
+/// For a full `rmw_zenoh`-style deployment (connect to `tcp/localhost:7447`,
+/// gossip scouting, timestamping) point `ZENOH_SESSION_CONFIG_URI` at the
+/// desired JSON5 file or supply `ZENOH_CONFIG_OVERRIDE` (see
+/// [`config_from_env`]).
 fn default_config() -> Config {
   let mut config = Config::default();
   // These keys are stable Zenoh config paths; a failure here is a programming
@@ -183,6 +238,24 @@ mod tests {
 
   use super::*;
   use crate::{MessageTypeName, Name, NodeName, NodeOptions, Publisher, QosProfile};
+
+  #[test]
+  fn config_overrides_apply_and_validate() {
+    // A well-formed override list applies cleanly...
+    let mut config = default_config();
+    apply_config_overrides(
+      &mut config,
+      "mode=\"client\"; connect/endpoints=[\"tcp/localhost:7447\"]",
+    )
+    .expect("valid overrides should apply");
+    assert_eq!(config.mode(), &Some(zenoh::config::WhatAmI::Client));
+
+    // ...empty entries are ignored...
+    apply_config_overrides(&mut default_config(), " ; ; ").expect("empty entries ignored");
+
+    // ...and an entry without `=` is rejected.
+    assert!(apply_config_overrides(&mut default_config(), "no_equals_here").is_err());
+  }
 
   #[test]
   fn opens_a_session_and_keeps_domain_id() {
