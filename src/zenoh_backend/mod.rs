@@ -51,6 +51,10 @@ pub(crate) mod service;
 #[cfg(feature = "zenoh")]
 pub(crate) mod action;
 
+// E8 — Parameters (six services + `parameter_events` topic; need `zenoh`).
+#[cfg(feature = "zenoh")]
+pub(crate) mod parameters;
+
 // E4 — Pub/Sub.
 // #[cfg(feature = "zenoh")]
 // pub(crate) mod pubsub;

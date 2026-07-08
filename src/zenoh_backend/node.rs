@@ -20,6 +20,7 @@ use super::{
   },
   context::Context,
   gid, keyexpr,
+  parameters::{ParameterClient, ParameterEvent, ParameterServer},
   pubsub::{Publisher, Subscription},
   qos_encoding,
   service::{Client, Server},
@@ -27,6 +28,7 @@ use super::{
 };
 use crate::{
   names::{ActionTypeName, MessageTypeName, Name, NodeName, ServiceTypeName},
+  parameters::Parameter,
   qos::QosProfile,
 };
 
@@ -387,6 +389,100 @@ impl Node {
     let feedback = self.create_publisher::<FeedbackMessage<F>>(&feedback_topic, None)?;
     Ok(ActionServer::new(send_goal, get_result, feedback))
   }
+
+  /// Create a [`ParameterServer`] for this node: the six `rcl_interfaces`
+  /// parameter services (named under this node, e.g.
+  /// `/talker/get_parameters`) plus the global `/parameter_events` publisher.
+  ///
+  /// `initial_parameters` seeds the parameter store (`use_sim_time` is always
+  /// added). Drive the returned server with
+  /// [`ParameterServer::spin_once`]/[`spin`](ParameterServer::spin).
+  pub fn create_parameter_server(
+    &self,
+    initial_parameters: impl IntoIterator<Item = Parameter>,
+  ) -> zenoh::Result<ParameterServer> {
+    let node_fqn = self.node_name.fully_qualified_name();
+    let svc = |base: &str| param_service_name(&node_fqn, base);
+    let param_type = |ty: &str| ServiceTypeName::new("rcl_interfaces", ty);
+
+    let get_parameters =
+      self.create_server(&svc("get_parameters")?, &param_type("GetParameters"))?;
+    let get_parameter_types = self.create_server(
+      &svc("get_parameter_types")?,
+      &param_type("GetParameterTypes"),
+    )?;
+    let set_parameters =
+      self.create_server(&svc("set_parameters")?, &param_type("SetParameters"))?;
+    let set_parameters_atomically = self.create_server(
+      &svc("set_parameters_atomically")?,
+      &param_type("SetParametersAtomically"),
+    )?;
+    let list_parameters =
+      self.create_server(&svc("list_parameters")?, &param_type("ListParameters"))?;
+    let describe_parameters = self.create_server(
+      &svc("describe_parameters")?,
+      &param_type("DescribeParameters"),
+    )?;
+
+    let events_topic = self.create_topic(
+      &Name::new("/", "parameter_events").map_err(name_err)?,
+      MessageTypeName::new("rcl_interfaces", "ParameterEvent"),
+      &QosProfile::default(),
+    );
+    let events = self.create_publisher::<ParameterEvent>(&events_topic, None)?;
+
+    Ok(ParameterServer::new(
+      node_fqn,
+      initial_parameters,
+      get_parameters,
+      get_parameter_types,
+      set_parameters,
+      set_parameters_atomically,
+      list_parameters,
+      describe_parameters,
+      events,
+    ))
+  }
+
+  /// Create a [`ParameterClient`] targeting `remote_node`'s parameter services.
+  pub fn create_parameter_client(&self, remote_node: &NodeName) -> zenoh::Result<ParameterClient> {
+    let remote_fqn = remote_node.fully_qualified_name();
+    let svc = |base: &str| param_service_name(&remote_fqn, base);
+    let param_type = |ty: &str| ServiceTypeName::new("rcl_interfaces", ty);
+
+    let get_parameters =
+      self.create_client(&svc("get_parameters")?, &param_type("GetParameters"))?;
+    let get_parameter_types = self.create_client(
+      &svc("get_parameter_types")?,
+      &param_type("GetParameterTypes"),
+    )?;
+    let set_parameters =
+      self.create_client(&svc("set_parameters")?, &param_type("SetParameters"))?;
+    let list_parameters =
+      self.create_client(&svc("list_parameters")?, &param_type("ListParameters"))?;
+    let describe_parameters = self.create_client(
+      &svc("describe_parameters")?,
+      &param_type("DescribeParameters"),
+    )?;
+
+    Ok(ParameterClient::new(
+      get_parameters,
+      get_parameter_types,
+      set_parameters,
+      list_parameters,
+      describe_parameters,
+    ))
+  }
+}
+
+/// Build the absolute `Name` of a parameter service, e.g.
+/// node fqn `/talker` + `get_parameters` → `/talker/get_parameters`.
+fn param_service_name(node_fqn: &str, base: &str) -> zenoh::Result<Name> {
+  Name::new(node_fqn, base).map_err(name_err)
+}
+
+fn name_err(e: crate::names::NameError) -> zenoh::Error {
+  Box::new(e)
 }
 
 /// Build the absolute `Name` of an action sub-entity, e.g.
