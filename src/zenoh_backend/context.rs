@@ -11,9 +11,13 @@ use std::sync::{
   Arc,
 };
 
-use zenoh::{Config, Session, Wait};
+use zenoh::{pubsub::Subscriber, sample::SampleKind, Config, Session, Wait};
 
-use super::node::{Node, NodeOptions};
+use super::{
+  graph_cache::GraphCache,
+  keyexpr,
+  node::{Node, NodeOptions},
+};
 use crate::names::NodeName;
 
 /// Builder for configuring a [`Context`] on the Zenoh backend.
@@ -66,6 +70,9 @@ struct ContextInner {
   session: Session,
   domain_id: u16,
   next_node_id: AtomicU64,
+  graph_cache: Arc<GraphCache>,
+  // Kept alive to keep the graph cache updating; dropped => subscriber undeclared.
+  _liveliness_subscriber: Subscriber<()>,
 }
 
 impl Context {
@@ -80,13 +87,48 @@ impl Context {
   pub fn with_options(opt: ContextOptions) -> zenoh::Result<Context> {
     let config = opt.config.unwrap_or_else(default_config);
     let session = zenoh::open(config).wait()?;
+
+    // Build the ROS graph cache from liveliness tokens: subscribe over the whole
+    // domain admin space with history so existing entities are delivered too.
+    let graph_cache = Arc::new(GraphCache::default());
+    let cache_for_cb = graph_cache.clone();
+    let liveliness_subscriber = session
+      .liveliness()
+      .declare_subscriber(keyexpr::graph_cache_keyexpr(opt.domain_id))
+      .history(true)
+      .callback(move |sample| {
+        let key = sample.key_expr().as_str();
+        match sample.kind() {
+          SampleKind::Put => cache_for_cb.apply_put(key),
+          SampleKind::Delete => cache_for_cb.apply_delete(key),
+        }
+      })
+      .wait()?;
+
     Ok(Context {
       inner: Arc::new(ContextInner {
         session,
         domain_id: opt.domain_id,
         next_node_id: AtomicU64::new(0),
+        graph_cache,
+        _liveliness_subscriber: liveliness_subscriber,
       }),
     })
+  }
+
+  /// Number of publishers currently discovered on `topic` (fully-qualified).
+  pub fn publisher_count(&self, topic: &str) -> usize {
+    self.inner.graph_cache.publisher_count(topic)
+  }
+
+  /// Number of subscriptions currently discovered on `topic`.
+  pub fn subscription_count(&self, topic: &str) -> usize {
+    self.inner.graph_cache.subscription_count(topic)
+  }
+
+  /// Fully-qualified names of all currently discovered nodes.
+  pub fn node_names(&self) -> Vec<String> {
+    self.inner.graph_cache.node_names()
   }
 
   /// Create a new ROS 2 [`Node`] on this context's session.
@@ -137,7 +179,10 @@ fn default_config() -> Config {
 
 #[cfg(test)]
 mod tests {
+  use std::time::{Duration, Instant};
+
   use super::*;
+  use crate::{MessageTypeName, Name, NodeName, NodeOptions, Publisher, QosProfile};
 
   #[test]
   fn opens_a_session_and_keeps_domain_id() {
@@ -147,5 +192,49 @@ mod tests {
     // Cloning shares the same session handle.
     let ctx2 = ctx.clone();
     assert_eq!(ctx2.domain_id(), 7);
+  }
+
+  fn make_config(listen_port: u16, connect_port: Option<u16>) -> Config {
+    let mut c = Config::default();
+    c.insert_json5("mode", "\"peer\"").unwrap();
+    c.insert_json5("scouting/multicast/enabled", "false")
+      .unwrap();
+    c.insert_json5(
+      "listen/endpoints",
+      &format!("[\"tcp/127.0.0.1:{listen_port}\"]"),
+    )
+    .unwrap();
+    if let Some(p) = connect_port {
+      c.insert_json5("connect/endpoints", &format!("[\"tcp/127.0.0.1:{p}\"]"))
+        .unwrap();
+    }
+    c
+  }
+
+  #[test]
+  fn graph_cache_discovers_remote_publisher_and_node() {
+    let a_port = 17517;
+    let b_port = 17518;
+    let ctx_a =
+      Context::with_options(ContextOptions::new().zenoh_config(make_config(a_port, None))).unwrap();
+    let ctx_b =
+      Context::with_options(ContextOptions::new().zenoh_config(make_config(b_port, Some(a_port))))
+        .unwrap();
+
+    let node_a = ctx_a.new_node(NodeName::new("/", "talker").unwrap(), NodeOptions::new());
+    let topic = node_a.create_topic(
+      &Name::new("/", "chatter").unwrap(),
+      MessageTypeName::new("std_msgs", "String"),
+      &QosProfile::publisher_default(),
+    );
+    let _publisher: Publisher<String> = node_a.create_publisher(&topic, None).unwrap();
+
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while Instant::now() < deadline && ctx_b.publisher_count("/chatter") == 0 {
+      std::thread::sleep(Duration::from_millis(100));
+    }
+
+    assert_eq!(ctx_b.publisher_count("/chatter"), 1);
+    assert!(ctx_b.node_names().contains(&"/talker".to_string()));
   }
 }
