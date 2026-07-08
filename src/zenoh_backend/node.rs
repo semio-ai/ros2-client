@@ -23,6 +23,7 @@ use super::{
   parameters::{ParameterClient, ParameterEvent, ParameterServer},
   pubsub::{Publisher, Subscription},
   qos_encoding,
+  rosout::{Log, Logger},
   service::{Client, Server},
   type_hash,
 };
@@ -471,6 +472,31 @@ impl Node {
       set_parameters,
       list_parameters,
       describe_parameters,
+    ))
+  }
+
+  /// Create a rosout [`Logger`] for this node: a publisher on the global
+  /// `/rosout` topic (`rcl_interfaces/msg/Log`). Records are stamped with this
+  /// node's base name. Use the [`rosout!`](crate::rosout!) macro to log.
+  pub fn create_logger(&self) -> zenoh::Result<Logger> {
+    let publisher = self.create_publisher::<Log>(&self.rosout_topic()?, None)?;
+    Ok(Logger::new(
+      self.node_name.base_name().to_string(),
+      publisher,
+    ))
+  }
+
+  /// Subscribe to the global `/rosout` topic to read log records published by
+  /// any node (the `read_rosout` capability).
+  pub fn read_rosout(&self) -> zenoh::Result<Subscription<Log>> {
+    self.create_subscription::<Log>(&self.rosout_topic()?, None)
+  }
+
+  fn rosout_topic(&self) -> zenoh::Result<Topic> {
+    Ok(self.create_topic(
+      &Name::new("/", "rosout").map_err(name_err)?,
+      MessageTypeName::new("rcl_interfaces", "Log"),
+      &QosProfile::default(),
     ))
   }
 }

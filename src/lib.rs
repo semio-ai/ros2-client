@@ -202,6 +202,9 @@ pub use zenoh_backend::action::{ActionClient, ActionServer, GoalId};
 #[cfg(feature = "zenoh")]
 #[doc(inline)]
 pub use zenoh_backend::parameters::{ParameterClient, ParameterEvent, ParameterServer};
+#[cfg(feature = "zenoh")]
+#[doc(inline)]
+pub use zenoh_backend::rosout::{Log, Logger};
 
 /// Module for stuff we do not want to export from top level;
 pub mod ros2 {

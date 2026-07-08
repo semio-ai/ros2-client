@@ -55,6 +55,10 @@ pub(crate) mod action;
 #[cfg(feature = "zenoh")]
 pub(crate) mod parameters;
 
+// E9 — rosout logging (`/rosout` topic; needs the `zenoh` crate).
+#[cfg(feature = "zenoh")]
+pub(crate) mod rosout;
+
 // E4 — Pub/Sub.
 // #[cfg(feature = "zenoh")]
 // pub(crate) mod pubsub;
