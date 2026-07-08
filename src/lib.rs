@@ -197,6 +197,9 @@ pub use zenoh_backend::pubsub::{MessageInfo, Publisher, Subscription};
 #[cfg(feature = "zenoh")]
 #[doc(inline)]
 pub use zenoh_backend::service::{Client, RmwRequestId, Server};
+#[cfg(feature = "zenoh")]
+#[doc(inline)]
+pub use zenoh_backend::action::{ActionClient, ActionServer, GoalId};
 
 /// Module for stuff we do not want to export from top level;
 pub mod ros2 {

@@ -47,6 +47,10 @@ pub(crate) mod pubsub;
 #[cfg(feature = "zenoh")]
 pub(crate) mod service;
 
+// E7 — Actions (services + topics; need the `zenoh` crate).
+#[cfg(feature = "zenoh")]
+pub(crate) mod action;
+
 // E4 — Pub/Sub.
 // #[cfg(feature = "zenoh")]
 // pub(crate) mod pubsub;
