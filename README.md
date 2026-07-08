@@ -87,7 +87,9 @@ for configuration details.
 
 The design, the `rmw_zenoh` mapping, and the wire-format details are documented
 under [`docs/zenoh_study/`](docs/zenoh_study/); the design decisions are recorded
-under [`docs/decisions/`](docs/decisions/).
+under [`docs/decisions/`](docs/decisions/). To validate interoperability against
+a real ROS 2 + `rmw_zenoh` stack, follow
+[`docs/zenoh_study/interop_runbook.md`](docs/zenoh_study/interop_runbook.md).
 
 > **Type hashes (send direction):** REP-2016 `RIHS01_…` type hashes are emitted
 > from a table of known interop types; types outside that table use a wildcard
