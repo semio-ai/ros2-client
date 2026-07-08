@@ -11,8 +11,10 @@
 //! * `feedback` topic — `FeedbackMessage<F>`
 //!
 //! Goals are correlated by an application-level `GoalId` (a random UUID),
-//! exactly as in the DDS backend. `cancel_goal` and the `status` topic are
-//! follow-ups.
+//! exactly as in the DDS backend. Alongside send_goal/get_result/feedback, the
+//! module also wires the `cancel_goal` service (`action_msgs/srv/CancelGoal`)
+//! and the `status` topic (`action_msgs/msg/GoalStatusArray`), completing the
+//! ROS 2 action surface.
 
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
@@ -20,7 +22,14 @@ use super::{
   pubsub::{PublishError, Publisher, Subscription},
   service::{Client, RmwRequestId, Server, ServiceError},
 };
-use crate::{builtin_interfaces::Time, unique_identifier_msgs::UUID};
+use crate::{
+  action_msgs::{
+    CancelGoalRequest, CancelGoalResponse, CancelGoalResponseEnum, GoalInfo, GoalStatus,
+    GoalStatusArray,
+  },
+  builtin_interfaces::Time,
+  unique_identifier_msgs::UUID,
+};
 
 /// Application-level goal identifier.
 pub type GoalId = UUID;
@@ -80,11 +89,14 @@ pub struct FeedbackMessage<F> {
   pub feedback: F,
 }
 
-/// An action client: send goals, receive feedback, fetch results.
+/// An action client: send goals, receive feedback, fetch results, cancel
+/// goals, and watch status.
 pub struct ActionClient<G, R, F> {
   send_goal: Client<SendGoalRequest<G>, SendGoalResponse>,
   get_result: Client<GetResultRequest, GetResultResponse<R>>,
   feedback: Subscription<FeedbackMessage<F>>,
+  cancel_goal: Client<CancelGoalRequest, CancelGoalResponse>,
+  status: Subscription<GoalStatusArray>,
 }
 
 impl<G: Serialize, R: DeserializeOwned, F: DeserializeOwned> ActionClient<G, R, F> {
@@ -92,11 +104,15 @@ impl<G: Serialize, R: DeserializeOwned, F: DeserializeOwned> ActionClient<G, R, 
     send_goal: Client<SendGoalRequest<G>, SendGoalResponse>,
     get_result: Client<GetResultRequest, GetResultResponse<R>>,
     feedback: Subscription<FeedbackMessage<F>>,
+    cancel_goal: Client<CancelGoalRequest, CancelGoalResponse>,
+    status: Subscription<GoalStatusArray>,
   ) -> Self {
     Self {
       send_goal,
       get_result,
       feedback,
+      cancel_goal,
+      status,
     }
   }
 
@@ -121,6 +137,36 @@ impl<G: Serialize, R: DeserializeOwned, F: DeserializeOwned> ActionClient<G, R, 
       _ => None,
     }
   }
+
+  /// Request cancellation of a single goal by id (blocks for the server's
+  /// [`CancelGoalResponse`]).
+  pub fn cancel_goal(&self, goal_id: GoalId) -> Result<CancelGoalResponse, ServiceError> {
+    self.cancel_goal.call(CancelGoalRequest {
+      goal_info: GoalInfo {
+        goal_id,
+        stamp: Time::ZERO,
+      },
+    })
+  }
+
+  /// Request cancellation of all goals (zero goal id + zero stamp, per the
+  /// `action_msgs/srv/CancelGoal` policy).
+  pub fn cancel_all_goals(&self) -> Result<CancelGoalResponse, ServiceError> {
+    self.cancel_goal.call(CancelGoalRequest {
+      goal_info: GoalInfo {
+        goal_id: UUID::ZERO,
+        stamp: Time::ZERO,
+      },
+    })
+  }
+
+  /// Take the latest goal-status array if one is immediately available.
+  pub fn take_status(&self) -> Option<GoalStatusArray> {
+    match self.status.try_take() {
+      Ok(Some((msg, _info))) => Some(msg),
+      _ => None,
+    }
+  }
 }
 
 /// An action server: accept goals, publish feedback, answer result requests.
@@ -131,6 +177,8 @@ pub struct ActionServer<G, R, F> {
   send_goal: Server<SendGoalRequest<G>, SendGoalResponse>,
   get_result: Server<GetResultRequest, GetResultResponse<R>>,
   feedback: Publisher<FeedbackMessage<F>>,
+  cancel_goal: Server<CancelGoalRequest, CancelGoalResponse>,
+  status: Publisher<GoalStatusArray>,
 }
 
 impl<G: DeserializeOwned, R: Serialize, F: Serialize> ActionServer<G, R, F> {
@@ -138,11 +186,15 @@ impl<G: DeserializeOwned, R: Serialize, F: Serialize> ActionServer<G, R, F> {
     send_goal: Server<SendGoalRequest<G>, SendGoalResponse>,
     get_result: Server<GetResultRequest, GetResultResponse<R>>,
     feedback: Publisher<FeedbackMessage<F>>,
+    cancel_goal: Server<CancelGoalRequest, CancelGoalResponse>,
+    status: Publisher<GoalStatusArray>,
   ) -> Self {
     Self {
       send_goal,
       get_result,
       feedback,
+      cancel_goal,
+      status,
     }
   }
 
@@ -188,6 +240,37 @@ impl<G: DeserializeOwned, R: Serialize, F: Serialize> ActionServer<G, R, F> {
     self
       .get_result
       .send_response(id, GetResultResponse { status, result })
+  }
+
+  /// Take a pending cancel request if available: `(request id, goal id)`.
+  /// A zero goal id means "cancel all" (see `action_msgs/srv/CancelGoal`).
+  pub fn try_receive_cancel(&self) -> Option<(RmwRequestId, GoalId)> {
+    match self.cancel_goal.try_receive_request() {
+      Ok(Some((id, req))) => Some((id, req.goal_info.goal_id)),
+      _ => None,
+    }
+  }
+
+  /// Respond to a cancel request with a return code and the goals now
+  /// transitioning to CANCELING.
+  pub fn respond_cancel(
+    &self,
+    id: RmwRequestId,
+    return_code: CancelGoalResponseEnum,
+    goals_canceling: Vec<GoalInfo>,
+  ) -> Result<(), ServiceError> {
+    self.cancel_goal.send_response(
+      id,
+      CancelGoalResponse {
+        return_code,
+        goals_canceling,
+      },
+    )
+  }
+
+  /// Publish the current goal-status array on the `status` topic.
+  pub fn publish_status(&self, status_list: Vec<GoalStatus>) -> Result<(), PublishError> {
+    self.status.publish(GoalStatusArray { status_list })
   }
 }
 
@@ -343,5 +426,140 @@ mod tests {
     let (status, result) = outcome.expect("no result received");
     assert_eq!(status, goal_status::SUCCEEDED);
     assert_eq!(result.sequence, vec![0, 1, 1, 2, 3]);
+  }
+
+  #[test]
+  fn cancel_and_status_roundtrip() {
+    use crate::{
+      action_msgs::{CancelGoalResponseEnum, GoalInfo, GoalStatus, GoalStatusEnum},
+      builtin_interfaces::Time,
+      ActionTypeName,
+    };
+
+    let srv_port = 17529;
+    let cli_port = 17530;
+    let srv_ctx =
+      Context::with_options(ContextOptions::new().zenoh_config(make_config(srv_port, None)))
+        .unwrap();
+    let cli_ctx = Context::with_options(
+      ContextOptions::new().zenoh_config(make_config(cli_port, Some(srv_port))),
+    )
+    .unwrap();
+
+    let srv_node = srv_ctx.new_node(
+      NodeName::new("/", "fib_server").unwrap(),
+      NodeOptions::new(),
+    );
+    let cli_node = cli_ctx.new_node(
+      NodeName::new("/", "fib_client").unwrap(),
+      NodeOptions::new(),
+    );
+    let atype = ActionTypeName::new("action_tutorials_interfaces", "Fibonacci");
+    let name = Name::new("/", "fibonacci").unwrap();
+
+    let server: ActionServer<FibGoal, FibResult, FibFeedback> =
+      srv_node.create_action_server(&name, &atype).unwrap();
+    let client: ActionClient<FibGoal, FibResult, FibFeedback> =
+      cli_node.create_action_client(&name, &atype).unwrap();
+
+    // Server: track goal statuses, publish the array each tick, and honour
+    // cancel requests by moving the goal to Canceled.
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop_srv = stop.clone();
+    let server_thread = std::thread::spawn(move || {
+      let deadline = Instant::now() + Duration::from_secs(30);
+      let mut statuses: BTreeMap<GoalId, GoalStatusEnum> = BTreeMap::new();
+      while !stop_srv.load(Ordering::Relaxed) && Instant::now() < deadline {
+        if let Some((id, goal_id, _goal)) = server.try_receive_goal() {
+          let _ = server.respond_goal(id, true);
+          statuses.insert(goal_id, GoalStatusEnum::Executing);
+        }
+        if let Some((id, goal_id)) = server.try_receive_cancel() {
+          // Single-goal cancel (goal_id non-zero in this test).
+          let canceling = if statuses.contains_key(&goal_id) {
+            statuses.insert(goal_id, GoalStatusEnum::Canceled);
+            vec![GoalInfo {
+              goal_id,
+              stamp: Time::ZERO,
+            }]
+          } else {
+            vec![]
+          };
+          let code = if canceling.is_empty() {
+            CancelGoalResponseEnum::UnknownGoal
+          } else {
+            CancelGoalResponseEnum::None
+          };
+          let _ = server.respond_cancel(id, code, canceling);
+        }
+        // Publish the full status array every tick (as ROS action servers do).
+        let list: Vec<GoalStatus> = statuses
+          .iter()
+          .map(|(goal_id, status)| GoalStatus {
+            goal_info: GoalInfo {
+              goal_id: *goal_id,
+              stamp: Time::ZERO,
+            },
+            status: *status,
+          })
+          .collect();
+        let _ = server.publish_status(list);
+        std::thread::sleep(Duration::from_millis(20));
+      }
+    });
+
+    // Client: send a goal, observe Executing status, cancel it, observe Canceled.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let goal_id = loop {
+      assert!(Instant::now() < deadline, "goal never accepted");
+      match client.send_goal(FibGoal { order: 10 }) {
+        Ok((gid, true)) => break gid,
+        _ => std::thread::sleep(Duration::from_millis(200)),
+      }
+    };
+
+    let status_of = |gid: GoalId, want: GoalStatusEnum| -> bool {
+      let end = Instant::now() + Duration::from_secs(20);
+      while Instant::now() < end {
+        if let Some(array) = client.take_status() {
+          if array
+            .status_list
+            .iter()
+            .any(|s| s.goal_info.goal_id == gid && s.status == want)
+          {
+            return true;
+          }
+        }
+        std::thread::sleep(Duration::from_millis(50));
+      }
+      false
+    };
+
+    assert!(
+      status_of(goal_id, GoalStatusEnum::Executing),
+      "never saw the goal reach Executing on /status"
+    );
+
+    // Cancel and check the response.
+    let resp = {
+      let end = Instant::now() + Duration::from_secs(20);
+      loop {
+        assert!(Instant::now() < end, "cancel never answered");
+        if let Ok(r) = client.cancel_goal(goal_id) {
+          break r;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+      }
+    };
+    assert_eq!(resp.return_code, CancelGoalResponseEnum::None);
+    assert!(resp.goals_canceling.iter().any(|g| g.goal_id == goal_id));
+
+    assert!(
+      status_of(goal_id, GoalStatusEnum::Canceled),
+      "never saw the goal reach Canceled on /status"
+    );
+
+    stop.store(true, Ordering::Relaxed);
+    let _ = server_thread.join();
   }
 }

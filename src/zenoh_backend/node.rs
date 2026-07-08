@@ -28,6 +28,7 @@ use super::{
   type_hash,
 };
 use crate::{
+  action_msgs::{CancelGoalRequest, CancelGoalResponse, GoalStatusArray},
   names::{ActionTypeName, MessageTypeName, Name, NodeName, ServiceTypeName},
   parameters::Parameter,
   qos::QosProfile,
@@ -359,7 +360,25 @@ impl Node {
       &QosProfile::default(),
     );
     let feedback = self.create_subscription::<FeedbackMessage<F>>(&feedback_topic, None)?;
-    Ok(ActionClient::new(send_goal, get_result, feedback))
+    // cancel_goal + status use the shared `action_msgs` types (not
+    // action-namespaced), matching rmw_zenoh / the DDS backend.
+    let cancel_goal = self.create_client::<CancelGoalRequest, CancelGoalResponse>(
+      &action_sub_name(&fqn, "cancel_goal")?,
+      &ServiceTypeName::new("action_msgs", "CancelGoal"),
+    )?;
+    let status_topic = self.create_topic(
+      &action_sub_name(&fqn, "status")?,
+      MessageTypeName::new("action_msgs", "GoalStatusArray"),
+      &QosProfile::default(),
+    );
+    let status = self.create_subscription::<GoalStatusArray>(&status_topic, None)?;
+    Ok(ActionClient::new(
+      send_goal,
+      get_result,
+      feedback,
+      cancel_goal,
+      status,
+    ))
   }
 
   /// Create an action server for `action` of the given action type.
@@ -388,7 +407,23 @@ impl Node {
       &QosProfile::default(),
     );
     let feedback = self.create_publisher::<FeedbackMessage<F>>(&feedback_topic, None)?;
-    Ok(ActionServer::new(send_goal, get_result, feedback))
+    let cancel_goal = self.create_server::<CancelGoalRequest, CancelGoalResponse>(
+      &action_sub_name(&fqn, "cancel_goal")?,
+      &ServiceTypeName::new("action_msgs", "CancelGoal"),
+    )?;
+    let status_topic = self.create_topic(
+      &action_sub_name(&fqn, "status")?,
+      MessageTypeName::new("action_msgs", "GoalStatusArray"),
+      &QosProfile::default(),
+    );
+    let status = self.create_publisher::<GoalStatusArray>(&status_topic, None)?;
+    Ok(ActionServer::new(
+      send_goal,
+      get_result,
+      feedback,
+      cancel_goal,
+      status,
+    ))
   }
 
   /// Create a [`ParameterServer`] for this node: the six `rcl_interfaces`
