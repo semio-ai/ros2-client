@@ -499,6 +499,18 @@ impl Node {
       &QosProfile::default(),
     ))
   }
+
+  /// Resolve once at least one publisher on `topic` is discovered (delegates to
+  /// [`Context::wait_for_publisher`](crate::Context::wait_for_publisher)).
+  pub async fn wait_for_publisher(&self, topic: &str) {
+    self.context.wait_for_publisher(topic).await
+  }
+
+  /// Resolve once at least one subscription on `topic` is discovered (delegates
+  /// to [`Context::wait_for_subscription`](crate::Context::wait_for_subscription)).
+  pub async fn wait_for_subscription(&self, topic: &str) {
+    self.context.wait_for_subscription(topic).await
+  }
 }
 
 /// Build the absolute `Name` of a parameter service, e.g.
