@@ -15,7 +15,13 @@
 //!   match until full IDL hashing lands.
 //!
 //! The table values are taken from observed `rmw_zenoh` traffic / the design
-//! examples and are covered by a test so drift is caught.
+//! examples and are covered by a test so drift is caught. They are additionally
+//! cross-checked against the from-scratch REP-2016 computation in
+//! [`super::type_description`] (which reproduces both hashes byte-exactly from
+//! their field descriptions), so the table entries are now *verified* rather
+//! than merely observed. Computing hashes for arbitrary types at code-gen time
+//! (removing the table entirely for the send direction) is the remaining
+//! `msggen` integration follow-up (ADR-0007).
 
 /// Wildcard used in the type-hash slot of a *receiver's* key expression so it
 /// matches publishers/clients of any hash. A single-chunk `*` matches exactly

@@ -119,6 +119,11 @@ tracing = "0.1.41"
 # dependency is unconditional (it is tiny and pure-Rust) to keep the wire-format
 # modules unit-testable on any build.
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
+# REP-2016 `RIHS01_…` type hashes are SHA-256 over a canonical JSON type
+# description (docs/decisions/0007). Like the GID hashing above, this is
+# backend-neutral spec code, so the (pure-Rust) dependency is unconditional to
+# keep the type-hash module unit-testable on any build.
+sha2 = "0.10"
 
 [dev-dependencies]
 log = "0.4"

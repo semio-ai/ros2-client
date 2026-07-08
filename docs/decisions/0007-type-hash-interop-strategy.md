@@ -40,6 +40,28 @@ A layered strategy, MVP = (a) + (b):
 - **(c) Future: compute RIHS01 from parsed `.msg`/`.srv`/`.action` IDL** in
   `msggen`. Tracked as a follow-up issue, not required for MVP.
 
+## Update: RIHS01 computation implemented
+
+The core REP-2016 computation for (c) now exists in
+`src/zenoh_backend/type_description.rs`: a backend-neutral, from-scratch
+implementation of `rosidl_generator_type_description::calculate_type_hash`
+(the `FieldType` id scheme, the canonical hashable JSON — struct-order keys,
+`", "`/`": "` separators, `default_value` stripped, referenced types sorted by
+name — and `RIHS01_` + SHA-256). It reproduces the published hashes of
+`std_msgs/msg/String` and `example_interfaces/srv/AddTwoInts` byte-exactly
+(services compose a synthetic top type over `request_message`/`response_message`/
+`event_message` plus the transitive closure), and those values are cross-checked
+against the known-types table so the two can never silently diverge.
+
+What remains for (c) is the *pipeline* work, not the algorithm: teaching
+`msggen` to build a `TypeDescription` for each generated type by resolving the
+transitive closure of nested types across packages (and pinning a distro's
+builtin definitions, e.g. `service_msgs/ServiceEventInfo`, whose `client_gid`
+field type changed between distros and changes the hash), then emitting the
+computed hash as a generated constant the Zenoh backend can use directly. Until
+then, the send direction still relies on the known-types table for types not
+generated with a hash.
+
 ## Consequences
 
 - **Pro:** interop works today for the receive direction universally and for the
