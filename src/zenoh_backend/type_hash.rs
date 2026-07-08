@@ -22,6 +22,14 @@
 /// one key-expression chunk (the hash), which is what we want here.
 pub const WILDCARD: &str = "*";
 
+/// Concrete placeholder hash used by a *sender* (publisher/client) when the
+/// real REP-2016 hash is unknown. A `put` cannot target a wildcard key, so a
+/// concrete value is required; this well-formed all-zero `RIHS01_` hash lets
+/// two `ros2-client` peers match each other. Interop with C++ peers in the send
+/// direction still needs the real hash (see [`known_type_hash`], ADR-0007).
+pub const PLACEHOLDER_HASH: &str =
+  "RIHS01_0000000000000000000000000000000000000000000000000000000000000000";
+
 /// Look up the REP-2016 type hash for a DDS-form type name
 /// (e.g. `std_msgs::msg::dds_::String_`).
 ///
@@ -39,10 +47,11 @@ pub fn known_type_hash(dds_type_name: &str) -> Option<&'static str> {
   })
 }
 
-/// The hash to place in a *sender's* key: the known hash if we have it,
-/// otherwise a placeholder wildcard (documented limitation).
+/// The hash to place in a *sender's* (publisher/client) concrete key: the known
+/// hash if we have it, otherwise [`PLACEHOLDER_HASH`] (documented limitation —
+/// send-direction interop with C++ peers needs the real hash).
 pub fn sender_hash(dds_type_name: &str) -> &str {
-  known_type_hash(dds_type_name).unwrap_or(WILDCARD)
+  known_type_hash(dds_type_name).unwrap_or(PLACEHOLDER_HASH)
 }
 
 // ---------------------------------------------------------------------------
@@ -64,9 +73,11 @@ mod tests {
   }
 
   #[test]
-  fn unknown_falls_back_to_wildcard() {
+  fn unknown_sender_uses_concrete_placeholder() {
     assert_eq!(known_type_hash("pkg::msg::dds_::Nope_"), None);
-    assert_eq!(sender_hash("pkg::msg::dds_::Nope_"), WILDCARD);
+    // A sender must use a concrete key, never the wildcard.
+    assert_eq!(sender_hash("pkg::msg::dds_::Nope_"), PLACEHOLDER_HASH);
+    assert_ne!(sender_hash("pkg::msg::dds_::Nope_"), WILDCARD);
     assert!(sender_hash("std_msgs::msg::dds_::String_").starts_with("RIHS01_"));
   }
 }

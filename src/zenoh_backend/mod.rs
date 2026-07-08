@@ -35,6 +35,12 @@ pub(crate) mod cdr;
 #[cfg(feature = "zenoh")]
 pub(crate) mod context;
 
+// E4 — Node/Topic and Pub/Sub (need the `zenoh` crate).
+#[cfg(feature = "zenoh")]
+pub(crate) mod node;
+#[cfg(feature = "zenoh")]
+pub(crate) mod pubsub;
+
 // E4 — Pub/Sub.
 // #[cfg(feature = "zenoh")]
 // pub(crate) mod pubsub;

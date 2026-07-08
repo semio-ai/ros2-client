@@ -188,6 +188,12 @@ pub use rosout::{NodeLoggingHandle, RosoutRaw};
 #[cfg(feature = "zenoh")]
 #[doc(inline)]
 pub use zenoh_backend::context::{Context, ContextOptions};
+#[cfg(feature = "zenoh")]
+#[doc(inline)]
+pub use zenoh_backend::node::{Node, NodeOptions, Topic};
+#[cfg(feature = "zenoh")]
+#[doc(inline)]
+pub use zenoh_backend::pubsub::{MessageInfo, Publisher, Subscription};
 
 /// Module for stuff we do not want to export from top level;
 pub mod ros2 {
