@@ -205,6 +205,12 @@ pub use zenoh_backend::parameters::{ParameterClient, ParameterEvent, ParameterSe
 #[cfg(feature = "zenoh")]
 #[doc(inline)]
 pub use zenoh_backend::rosout::{Log, Logger};
+#[cfg(feature = "zenoh")]
+#[doc(inline)]
+pub use zenoh_backend::{
+  graph_cache::{GraphEntity, GraphEvent},
+  keyexpr::EntityKind,
+};
 
 /// Module for stuff we do not want to export from top level;
 pub mod ros2 {

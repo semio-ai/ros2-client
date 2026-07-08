@@ -11,29 +11,96 @@
 
 use std::{collections::HashMap, sync::Mutex};
 
+use async_channel::{Receiver, Sender};
+
 use super::keyexpr::{parse_liveliness_key, EntityKind, ParsedEntity};
+
+/// A change in the ROS 2 graph, delivered by
+/// [`Context::graph_event_stream`](super::context::Context::graph_event_stream).
+///
+/// Backend-neutral: the same shape would be produced by the DDS backend's
+/// discovery (ADR-0004). It replaces the RustDDS-specific `NodeEvent::DDS` for
+/// graph observation on the Zenoh backend.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GraphEvent {
+  /// An entity became visible in the graph.
+  EntityDeclared(GraphEntity),
+  /// An entity was removed from the graph.
+  EntityUndeclared(GraphEntity),
+}
+
+/// A discovered ROS 2 graph entity (backend-neutral view of a liveliness
+/// token).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GraphEntity {
+  /// What kind of entity this is.
+  pub kind: EntityKind,
+  /// Fully-qualified name of the owning node (e.g. `/robot1/talker`).
+  pub node_name: String,
+  /// Topic/service name (`None` for a node entity).
+  pub name: Option<String>,
+  /// DDS-form type name (`None` for a node entity).
+  pub type_name: Option<String>,
+}
+
+impl From<&ParsedEntity> for GraphEntity {
+  fn from(e: &ParsedEntity) -> Self {
+    GraphEntity {
+      kind: e.kind,
+      node_name: join_fqn(&e.namespace, &e.node_name),
+      name: e.topic_name.clone(),
+      type_name: e.type_name.clone(),
+    }
+  }
+}
 
 /// A thread-safe cache of discovered ROS 2 entities, keyed by their liveliness
 /// token key expression.
 #[derive(Default)]
 pub struct GraphCache {
   entities: Mutex<HashMap<String, ParsedEntity>>,
+  // Fan-out event subscribers (one unbounded channel per `subscribe()` caller),
+  // mirroring the DDS backend's `status_event_senders`.
+  subscribers: Mutex<Vec<Sender<GraphEvent>>>,
 }
 
 impl GraphCache {
   /// Record an entity from a liveliness-token PUT. Non-token keys are ignored.
   pub fn apply_put(&self, key: &str) {
     if let Some(entity) = parse_liveliness_key(key) {
+      let event = GraphEvent::EntityDeclared(GraphEntity::from(&entity));
       self.entities.lock().unwrap().insert(key.to_owned(), entity);
+      self.broadcast(event);
     }
   }
 
   /// Remove an entity on a liveliness-token DELETE.
   pub fn apply_delete(&self, key: &str) {
-    self.entities.lock().unwrap().remove(key);
+    let removed = self.entities.lock().unwrap().remove(key);
+    if let Some(entity) = removed {
+      self.broadcast(GraphEvent::EntityUndeclared(GraphEntity::from(&entity)));
+    }
   }
 
-  fn count_kind_on_topic(&self, kind: EntityKind, topic: &str) -> usize {
+  /// Register a new event stream. Each subscriber receives every subsequent
+  /// [`GraphEvent`]; drop the receiver to unsubscribe.
+  pub fn subscribe(&self) -> Receiver<GraphEvent> {
+    let (tx, rx) = async_channel::unbounded();
+    self.subscribers.lock().unwrap().push(tx);
+    rx
+  }
+
+  fn broadcast(&self, event: GraphEvent) {
+    let mut subs = self.subscribers.lock().unwrap();
+    // Drop closed receivers; deliver to the rest (unbounded => only fails if
+    // closed).
+    subs.retain(|s| !s.is_closed());
+    for s in subs.iter() {
+      let _ = s.try_send(event.clone());
+    }
+  }
+
+  pub(crate) fn count_kind_on_topic(&self, kind: EntityKind, topic: &str) -> usize {
     self
       .entities
       .lock()
@@ -138,5 +205,41 @@ mod tests {
     cache.apply_delete(&pub_key);
     assert_eq!(cache.publisher_count("/chatter"), 0);
     assert_eq!(cache.len(), 1);
+  }
+
+  #[test]
+  fn emits_declared_and_undeclared_events() {
+    let cache = GraphCache::default();
+    let stream = cache.subscribe();
+    let pub_key = entity_liveliness_keyexpr(
+      0,
+      &ids(1),
+      EntityKind::Publisher,
+      "/chatter",
+      "std_msgs::msg::dds_::String_",
+      "RIHS01_x",
+      "::,7:,:,:,,",
+    );
+
+    cache.apply_put(&pub_key);
+    cache.apply_delete(&pub_key);
+    // A non-token key produces no event.
+    cache.apply_put("0/chatter/not-a-token");
+
+    let declared = stream.try_recv().expect("a declared event");
+    match declared {
+      GraphEvent::EntityDeclared(e) => {
+        assert_eq!(e.kind, EntityKind::Publisher);
+        assert_eq!(e.name.as_deref(), Some("/chatter"));
+        assert_eq!(e.node_name, "/talker");
+      }
+      other => panic!("expected EntityDeclared, got {:?}", other),
+    }
+    match stream.try_recv().expect("an undeclared event") {
+      GraphEvent::EntityUndeclared(e) => assert_eq!(e.kind, EntityKind::Publisher),
+      other => panic!("expected EntityUndeclared, got {:?}", other),
+    }
+    // No third event (the non-token PUT was ignored).
+    assert!(stream.try_recv().is_err());
   }
 }

@@ -11,11 +11,12 @@ use std::sync::{
   Arc,
 };
 
+use async_channel::Receiver;
 use zenoh::{pubsub::Subscriber, sample::SampleKind, Config, Session, Wait};
 
 use super::{
-  graph_cache::GraphCache,
-  keyexpr,
+  graph_cache::{GraphCache, GraphEvent},
+  keyexpr::{self, EntityKind},
   node::{Node, NodeOptions},
 };
 use crate::names::NodeName;
@@ -137,6 +138,42 @@ impl Context {
   /// Fully-qualified names of all currently discovered nodes.
   pub fn node_names(&self) -> Vec<String> {
     self.inner.graph_cache.node_names()
+  }
+
+  /// Subscribe to ROS graph changes. Each returned stream receives every
+  /// subsequent [`GraphEvent`] (entity declared/undeclared); drop it to
+  /// unsubscribe. The backend-neutral alternative to polling
+  /// `publisher_count`/`node_names`.
+  pub fn graph_event_stream(&self) -> Receiver<GraphEvent> {
+    self.inner.graph_cache.subscribe()
+  }
+
+  /// Resolve once at least one publisher on `topic` (fully-qualified) is
+  /// discovered — immediately if one already exists.
+  pub async fn wait_for_publisher(&self, topic: &str) {
+    self.wait_for(EntityKind::Publisher, topic).await
+  }
+
+  /// Resolve once at least one subscription on `topic` is discovered —
+  /// immediately if one already exists.
+  pub async fn wait_for_subscription(&self, topic: &str) {
+    self.wait_for(EntityKind::Subscription, topic).await
+  }
+
+  async fn wait_for(&self, kind: EntityKind, name: &str) {
+    // Subscribe *before* checking the current count, so an entity that appears
+    // between the check and the subscription is not missed.
+    let stream = self.inner.graph_cache.subscribe();
+    if self.inner.graph_cache.count_kind_on_topic(kind, name) > 0 {
+      return;
+    }
+    while let Ok(event) = stream.recv().await {
+      if let GraphEvent::EntityDeclared(e) = event {
+        if e.kind == kind && e.name.as_deref() == Some(name) {
+          return;
+        }
+      }
+    }
   }
 
   /// Create a new ROS 2 [`Node`] on this context's session.
@@ -309,5 +346,37 @@ mod tests {
 
     assert_eq!(ctx_b.publisher_count("/chatter"), 1);
     assert!(ctx_b.node_names().contains(&"/talker".to_string()));
+  }
+
+  #[test]
+  fn wait_for_publisher_resolves_on_discovery() {
+    let a_port = 17527;
+    let b_port = 17528;
+    let ctx_a =
+      Context::with_options(ContextOptions::new().zenoh_config(make_config(a_port, None))).unwrap();
+    let ctx_b =
+      Context::with_options(ContextOptions::new().zenoh_config(make_config(b_port, Some(a_port))))
+        .unwrap();
+
+    // Start waiting on ctx_b before the publisher exists.
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let ctx_b_waiter = ctx_b.clone();
+    std::thread::spawn(move || {
+      futures::executor::block_on(ctx_b_waiter.wait_for_publisher("/chatter"));
+      let _ = done_tx.send(());
+    });
+
+    // Now create the publisher on ctx_a.
+    let node_a = ctx_a.new_node(NodeName::new("/", "talker").unwrap(), NodeOptions::new());
+    let topic = node_a.create_topic(
+      &Name::new("/", "chatter").unwrap(),
+      MessageTypeName::new("std_msgs", "String"),
+      &QosProfile::publisher_default(),
+    );
+    let _publisher: Publisher<String> = node_a.create_publisher(&topic, None).unwrap();
+
+    done_rx
+      .recv_timeout(Duration::from_secs(15))
+      .expect("wait_for_publisher did not resolve after the publisher appeared");
   }
 }
