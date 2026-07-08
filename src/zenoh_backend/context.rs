@@ -6,9 +6,15 @@
 //! it opens the session and holds the domain id (used as the key-expression
 //! prefix). Node/pub/sub/service creation is added by E4–E6.
 
-use std::sync::Arc;
+use std::sync::{
+  atomic::{AtomicU64, Ordering},
+  Arc,
+};
 
 use zenoh::{Config, Session, Wait};
+
+use super::node::{Node, NodeOptions};
+use crate::names::NodeName;
 
 /// Builder for configuring a [`Context`] on the Zenoh backend.
 pub struct ContextOptions {
@@ -59,6 +65,7 @@ pub struct Context {
 struct ContextInner {
   session: Session,
   domain_id: u16,
+  next_node_id: AtomicU64,
 }
 
 impl Context {
@@ -77,8 +84,15 @@ impl Context {
       inner: Arc::new(ContextInner {
         session,
         domain_id: opt.domain_id,
+        next_node_id: AtomicU64::new(0),
       }),
     })
+  }
+
+  /// Create a new ROS 2 [`Node`] on this context's session.
+  pub fn new_node(&self, name: NodeName, options: NodeOptions) -> Node {
+    let node_id = self.inner.next_node_id.fetch_add(1, Ordering::Relaxed);
+    Node::new(self.clone(), name, node_id, options)
   }
 
   /// The ROS domain id (key-expression prefix) for this context.
