@@ -225,8 +225,8 @@ pub mod ros2 {
   pub use crate::log::LogLevel;
   // TODO: What to do about SecurityError (exists based on feature "security")
   pub use crate::names::Name; // import Name as ros2::Name if there is clash
-                              // otherwise
-                              // Backend-neutral QoS (available on both backends).
+  // otherwise
+  // Backend-neutral QoS (available on both backends).
   pub use crate::qos::QosProfile;
 }
 

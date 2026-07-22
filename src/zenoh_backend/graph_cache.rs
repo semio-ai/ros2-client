@@ -162,7 +162,9 @@ fn join_fqn(namespace: &str, name: &str) -> String {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::zenoh_backend::keyexpr::{entity_liveliness_keyexpr, node_liveliness_keyexpr, EntityIds};
+  use crate::zenoh_backend::keyexpr::{
+    entity_liveliness_keyexpr, node_liveliness_keyexpr, EntityIds,
+  };
 
   fn ids(entity_id: u64) -> EntityIds<'static> {
     EntityIds {
