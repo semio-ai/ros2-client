@@ -1,6 +1,9 @@
 [package]
-name = "ros2-client"
-version = "0.10.0" 
+# Fork of Atostek/ros2-client published under a distinct name (upstream owns
+# `ros2-client` on crates.io). The library is still imported as `ros2_client`
+# (see the [lib] section), so consumers only rename the dependency, not the code.
+name = "ros2-client-multi-rmw"
+version = "0.10.0"
 edition = "2018"
 rust-version = "1.82.0"
 authors = ["Juhana Helovuo <juhana.helovuo@atostek.com>"]
@@ -9,7 +12,7 @@ readme = "README.md"
 keywords = ["network","protocol","dds","rtps"]
 license = "Apache-2.0"
 homepage = "https://atostek.com/en/products/rustdds/"  
-repository = "https://github.com/Atostek/ros2-client/"
+repository = "https://github.com/semio-ai/ros2-client/"
 categories = ["network-programming", "science::robotics"]
 
 # Examples are declared explicitly (below) rather than auto-discovered, so each
@@ -20,6 +23,12 @@ categories = ["network-programming", "science::robotics"]
 autoexamples = false
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+# The published package is `ros2-client-multi-rmw`, but the library keeps the
+# `ros2_client` name so imports and downstream code are unchanged; consumers use
+# `ros2-client = { package = "ros2-client-multi-rmw", ... }`.
+[lib]
+name = "ros2_client"
 
 [features]
 
