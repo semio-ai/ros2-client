@@ -36,21 +36,59 @@ pub const WILDCARD: &str = "*";
 pub const PLACEHOLDER_HASH: &str =
   "RIHS01_0000000000000000000000000000000000000000000000000000000000000000";
 
+lazy_static::lazy_static! {
+  /// `dds_type_name -> RIHS01_…` for the `std_msgs` scalar message types a
+  /// device bridge publishes (`Float64`, `Bool`, `Int32`, …). Each is a single
+  /// `data` field, so its REP-2016 hash is computed from that description via
+  /// [`super::type_description`] — exactly (byte-for-byte) as a C++ peer would —
+  /// so *native* scalar topics match on the **send** direction, without waiting
+  /// on the full `msggen` integration (ADR-0007). `String` stays in the
+  /// hard-coded table in [`known_type_hash`].
+  static ref STD_MSGS_SCALAR_HASHES: std::collections::HashMap<&'static str, String> = {
+    use super::type_description::{
+      type_id as t, Field, FieldType, IndividualTypeDescription, TypeDescription,
+    };
+    // (DDS type name, ROS type name, the `data` field's base type id)
+    let scalars: &[(&str, &str, u8)] = &[
+      ("std_msgs::msg::dds_::Bool_", "std_msgs/msg/Bool", t::BOOLEAN),
+      ("std_msgs::msg::dds_::Float32_", "std_msgs/msg/Float32", t::FLOAT),
+      ("std_msgs::msg::dds_::Float64_", "std_msgs/msg/Float64", t::DOUBLE),
+      ("std_msgs::msg::dds_::Int32_", "std_msgs/msg/Int32", t::INT32),
+      ("std_msgs::msg::dds_::Int64_", "std_msgs/msg/Int64", t::INT64),
+      ("std_msgs::msg::dds_::UInt32_", "std_msgs/msg/UInt32", t::UINT32),
+      ("std_msgs::msg::dds_::UInt64_", "std_msgs/msg/UInt64", t::UINT64),
+    ];
+    scalars
+      .iter()
+      .map(|&(dds, ros, tid)| {
+        let td = TypeDescription::new(
+          IndividualTypeDescription::new(ros, vec![Field::new("data", FieldType::scalar(tid))]),
+          Vec::new(),
+        );
+        (dds, td.rihs01())
+      })
+      .collect()
+  };
+}
+
 /// Look up the REP-2016 type hash for a DDS-form type name
 /// (e.g. `std_msgs::msg::dds_::String_`).
 ///
-/// Returns `None` for types not in the table; callers then fall back to a
-/// wildcard/placeholder for the send direction.
+/// Covers the hard-coded interop types plus the computed `std_msgs` scalar
+/// messages ([`STD_MSGS_SCALAR_HASHES`]). Returns `None` for anything else;
+/// callers then fall back to a wildcard/placeholder for the send direction.
 pub fn known_type_hash(dds_type_name: &str) -> Option<&'static str> {
-  Some(match dds_type_name {
+  match dds_type_name {
     "std_msgs::msg::dds_::String_" => {
-      "RIHS01_df668c740482bbd48fb39d76a70dfd4bd59db1288021743503259e948f6b1a18"
+      Some("RIHS01_df668c740482bbd48fb39d76a70dfd4bd59db1288021743503259e948f6b1a18")
     }
     "example_interfaces::srv::dds_::AddTwoInts_" => {
-      "RIHS01_e118de6bf5eeb66a2491b5bda11202e7b68f198d6f67922cf30364858239c81a"
+      Some("RIHS01_e118de6bf5eeb66a2491b5bda11202e7b68f198d6f67922cf30364858239c81a")
     }
-    _ => return None,
-  })
+    _ => STD_MSGS_SCALAR_HASHES
+      .get(dds_type_name)
+      .map(String::as_str),
+  }
 }
 
 /// The hash to place in a *sender's* (publisher/client) concrete key: the known
@@ -85,5 +123,43 @@ mod tests {
     assert_eq!(sender_hash("pkg::msg::dds_::Nope_"), PLACEHOLDER_HASH);
     assert_ne!(sender_hash("pkg::msg::dds_::Nope_"), WILDCARD);
     assert!(sender_hash("std_msgs::msg::dds_::String_").starts_with("RIHS01_"));
+  }
+
+  #[test]
+  fn std_msgs_scalars_have_computed_hashes() {
+    use super::super::type_description::{
+      type_id as t, Field, FieldType, IndividualTypeDescription, TypeDescription,
+    };
+
+    // Float64 (and the other scalars) are now known and well-formed.
+    let f64_hash = known_type_hash("std_msgs::msg::dds_::Float64_").expect("Float64 known");
+    assert!(f64_hash.starts_with("RIHS01_") && f64_hash.len() == 71);
+    for dds in [
+      "std_msgs::msg::dds_::Bool_",
+      "std_msgs::msg::dds_::Float32_",
+      "std_msgs::msg::dds_::Int32_",
+      "std_msgs::msg::dds_::Int64_",
+      "std_msgs::msg::dds_::UInt32_",
+      "std_msgs::msg::dds_::UInt64_",
+    ] {
+      assert!(known_type_hash(dds).is_some(), "{dds} should be known");
+    }
+
+    // The table value equals the hash computed straight from the field
+    // description (drift guard, mirroring the String cross-check).
+    let td = TypeDescription::new(
+      IndividualTypeDescription::new(
+        "std_msgs/msg/Float64",
+        vec![Field::new("data", FieldType::scalar(t::DOUBLE))],
+      ),
+      Vec::new(),
+    );
+    assert_eq!(
+      known_type_hash("std_msgs::msg::dds_::Float64_"),
+      Some(td.rihs01().as_str())
+    );
+
+    // A genuinely unknown type is still None.
+    assert_eq!(known_type_hash("pkg::msg::dds_::Nope_"), None);
   }
 }
