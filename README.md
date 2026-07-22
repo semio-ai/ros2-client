@@ -11,6 +11,55 @@ It does not link to [rcl](https://github.com/ros2/rcl),
 [rclcpp](https://docs.ros2.org/galactic/api/rclcpp/index.html), or any non-Rust DDS library. 
 [RustDDS](https://github.com/jhelovuo/RustDDS) is used for communication.
 
+## This is a fork — published as `ros2-client-multi-rmw`
+
+`semio-ai/ros2-client` is a fork of [`Atostek/ros2-client`](https://github.com/Atostek/ros2-client)
+that adds a second, **`rmw_zenoh`-compatible ROS 2-over-Zenoh backend** alongside
+the original DDS one, selected at compile time by the mutually-exclusive `dds`
+(default) / `zenoh` features (see
+[`docs/decisions/0002-dual-backend-compile-time-feature-selection.md`](docs/decisions/0002-dual-backend-compile-time-feature-selection.md)).
+
+Upstream owns the `ros2-client` name on crates.io, so this fork is **published as
+`ros2-client-multi-rmw`**. The library is still imported as `ros2_client` (the
+`[lib]` name is pinned), so downstream code is unchanged — only the dependency
+line differs:
+
+```toml
+ros2-client = { package = "ros2-client-multi-rmw", version = "0.10", default-features = false, features = ["zenoh"] }
+```
+
+Code stays `use ros2_client::…`. To publish a new version, bump `version` and run
+`cargo publish` (a maintainer crates.io token is enough — a manual publish needs
+no Trusted Publisher).
+
+### Re-aligning with upstream
+
+This fork is meant to keep tracking `Atostek/ros2-client`, and ideally to be
+retired once the Zenoh backend is upstreamed. To pull upstream changes in:
+
+```bash
+git remote add upstream https://github.com/Atostek/ros2-client.git   # once
+git fetch upstream
+git switch master && git merge upstream/master        # or: git rebase upstream/master
+```
+
+The fork's changes are **additive and feature-gated**, so merges stay small — the
+divergence is concentrated in a few seams:
+
+- the new `src/zenoh_backend/` module (upstream has nothing there);
+- the `dds` / `zenoh` feature gates and the `compile_error!` enforcing exactly one
+  backend (`src/lib.rs`);
+- thin backend-dispatch shims where `Context` / `Node` / topics are constructed.
+
+Conflicts almost always land in those seams. Resolve by keeping the backend split,
+then re-check **both** backends and the nightly formatter before re-publishing:
+
+```bash
+cargo test                                              # DDS (default)
+cargo test --no-default-features --features zenoh,jazzy --lib
+cargo +nightly fmt -- --check                           # CI formats with nightly rustfmt
+```
+
 The API is not identical to `rclcpp` or `rclpy`, because some parts would be very awkward in Rust. For example, there are no callbacks. Rust `async` mechanism is used instead. Alternatively, some of the functionality can be polled using the Metal I/O library.
 
 There is a `.spin()` call, but it is required only to have `ros2-client` execute some background tasks. You can spawn an async task to run it, and retain the flow of control in your code.
