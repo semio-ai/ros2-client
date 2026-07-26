@@ -22,6 +22,14 @@ categories = ["network-programming", "science::robotics"]
 # example, `zenoh_demo`.
 autoexamples = false
 
+# Integration tests are declared explicitly for the same reason. Both bundled
+# integration tests exercise the DDS backend's discovery/QoS API, so they are
+# gated on `dds`; a `--no-default-features --features zenoh` test build skips
+# them instead of failing to compile. Backend-neutral coverage of the zenoh
+# wire path lives in `#[cfg(test)]` unit tests inside the crate (see
+# `zenoh_backend::pubsub`).
+autotests = false
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 # The published package is `ros2-client-multi-rmw`, but the library keeps the
@@ -148,7 +156,7 @@ crossterm = { version = "0.29.0", features = ["event-stream"] }
 smol = "2.0"
 async-io = "2.2.0"
 async-ctrlc = "1.2"
-tokio = { version = "1", features=["rt", "macros", "time", "sync"]}
+tokio = { version = "1", features=["rt", "rt-multi-thread", "macros", "time", "sync"]}
 
 
 # ---------------------------------------------------------------------------
@@ -252,3 +260,16 @@ required-features = ["dds"]
 name = "zenoh_demo"
 path = "examples/zenoh_demo/main.rs"
 required-features = ["zenoh"]
+
+# ---------------------------------------------------------------------------
+# Integration tests (DDS backend). See `autotests = false` above.
+# ---------------------------------------------------------------------------
+[[test]]
+name = "pub_and_sub"
+path = "tests/pub_and_sub.rs"
+required-features = ["dds"]
+
+[[test]]
+name = "late_joiner"
+path = "tests/late_joiner.rs"
+required-features = ["dds"]
