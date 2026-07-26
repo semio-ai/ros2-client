@@ -162,12 +162,49 @@ impl<M: Serialize> Publisher<M> {
   }
 }
 
+impl<M> Publisher<M> {
+  /// Publish pre-encoded CDR bytes (which must include the 4-byte encapsulation
+  /// header) on this publisher's topic, with the standard rmw_zenoh attachment.
+  /// Lets a runtime-typed codec drive the wire without a compile-time message
+  /// type; does not touch `M`.
+  pub async fn publish_raw(&self, cdr_bytes: &[u8]) -> Result<(), PublishError> {
+    let sequence_number = self.seq.fetch_add(1, Ordering::Relaxed) + 1;
+    let attachment = AttachmentData {
+      sequence_number,
+      source_timestamp: now_nanos(),
+      source_gid: self.source_gid,
+    }
+    .to_zbytes();
+    self
+      .zenoh_publisher
+      .put(cdr_bytes.to_vec())
+      .attachment(attachment)
+      .await
+      .map_err(PublishError::Zenoh)
+  }
+}
+
 /// A ROS 2 subscription over Zenoh.
 pub struct Subscription<M> {
   zenoh_subscriber: Subscriber<FifoChannelHandler<Sample>>,
   // Kept alive so the entity stays discoverable; dropped => token undeclared.
   _liveliness_token: Option<LivelinessToken>,
   phantom: PhantomData<fn() -> M>,
+}
+
+/// Parse the rmw_zenoh attachment `(seq, ts, gid)` from a sample, if present.
+fn message_info_from(sample: &Sample) -> Result<MessageInfo, TakeError> {
+  match sample.attachment() {
+    Some(zbytes) => {
+      let a = AttachmentData::from_zbytes(zbytes).map_err(|_| TakeError::Attachment)?;
+      Ok(MessageInfo {
+        source_timestamp_nanos: a.source_timestamp,
+        sequence_number: a.sequence_number,
+        source_gid: a.source_gid,
+      })
+    }
+    None => Ok(MessageInfo::default()),
+  }
 }
 
 impl<M: DeserializeOwned> Subscription<M> {
@@ -183,20 +220,8 @@ impl<M: DeserializeOwned> Subscription<M> {
   }
 
   fn decode(sample: &Sample) -> Result<(M, MessageInfo), TakeError> {
-    let payload = sample.payload().to_bytes();
-    let msg = cdr::from_cdr::<M>(&payload).map_err(TakeError::Cdr)?;
-    let info = match sample.attachment() {
-      Some(zbytes) => {
-        let a = AttachmentData::from_zbytes(zbytes).map_err(|_| TakeError::Attachment)?;
-        MessageInfo {
-          source_timestamp_nanos: a.source_timestamp,
-          sequence_number: a.sequence_number,
-          source_gid: a.source_gid,
-        }
-      }
-      None => MessageInfo::default(),
-    };
-    Ok((msg, info))
+    let msg = cdr::from_cdr::<M>(&sample.payload().to_bytes()).map_err(TakeError::Cdr)?;
+    Ok((msg, message_info_from(sample)?))
   }
 
   /// Await the next message and its metadata.
@@ -216,6 +241,23 @@ impl<M: DeserializeOwned> Subscription<M> {
       Ok(None) => Ok(None),
       Err(_) => Err(TakeError::Closed),
     }
+  }
+}
+
+impl<M> Subscription<M> {
+  /// Await the next message as raw CDR bytes (with the 4-byte encapsulation
+  /// header) plus its metadata, for a runtime-typed codec instead of a
+  /// compile-time message type; does not touch `M`.
+  pub async fn take_raw(&self) -> Result<(Vec<u8>, MessageInfo), TakeError> {
+    let sample = self
+      .zenoh_subscriber
+      .recv_async()
+      .await
+      .map_err(|_| TakeError::Closed)?;
+    Ok((
+      sample.payload().to_bytes().to_vec(),
+      message_info_from(&sample)?,
+    ))
   }
 }
 
@@ -299,5 +341,56 @@ mod tests {
     assert_eq!(msg, "hello zenoh!");
     assert!(info.sequence_number() >= 1);
     assert_ne!(info.source_gid(), [0u8; 16]);
+  }
+
+  // Raw pub/sub: `publish_raw` puts pre-encoded CDR bytes and `take_raw` returns
+  // them unchanged (with the attachment), letting a runtime-typed codec drive
+  // the wire. Zenoh needs a multi-thread runtime for its async API.
+  #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+  async fn raw_pub_sub_roundtrip() {
+    let sub_port = 17515;
+    let pub_port = 17516;
+
+    let sub_ctx =
+      Context::with_options(ContextOptions::new().zenoh_config(make_config(sub_port, None)))
+        .expect("open subscriber context");
+    let pub_ctx = Context::with_options(
+      ContextOptions::new().zenoh_config(make_config(pub_port, Some(sub_port))),
+    )
+    .expect("open publisher context");
+
+    let sub_node = sub_ctx.new_node(NodeName::new("/", "raw_sub").unwrap(), NodeOptions::new());
+    let pub_node = pub_ctx.new_node(NodeName::new("/", "raw_pub").unwrap(), NodeOptions::new());
+
+    let make_topic = |n: &crate::Node| {
+      n.create_topic(
+        &Name::new("/", "raw_chatter").unwrap(),
+        MessageTypeName::new("std_msgs", "String"),
+        &QosProfile::default(),
+      )
+    };
+    // `M` is unused by the raw path; a unit placeholder is enough.
+    let sub: Subscription<()> = sub_node
+      .create_subscription(&make_topic(&sub_node), None)
+      .expect("create subscription");
+    let publisher: Publisher<()> = pub_node
+      .create_publisher(&make_topic(&pub_node), None)
+      .expect("create publisher");
+
+    // A CDR_LE payload: the 4-byte encapsulation header plus an opaque body.
+    let payload: Vec<u8> = vec![0x00, 0x01, 0x00, 0x00, 0xDE, 0xAD, 0xBE, 0xEF];
+
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+      publisher.publish_raw(&payload).await.expect("publish_raw");
+      if let Ok(Ok((bytes, info))) =
+        tokio::time::timeout(Duration::from_millis(200), sub.take_raw()).await
+      {
+        assert_eq!(bytes, payload, "raw bytes must survive the wire unchanged");
+        assert!(info.sequence_number() >= 1);
+        return;
+      }
+      assert!(Instant::now() < deadline, "no raw message within timeout");
+    }
   }
 }

@@ -5,6 +5,9 @@
 //! # Example
 //!
 //! ```
+//! # // This example uses the DDS backend API; skip it on a `zenoh`-only build
+//! # // so `cargo test --no-default-features --features zenoh` stays green.
+//! # #[cfg(feature = "dds")] {
 //! use futures::StreamExt;
 //! use ros2_client::*;
 //!
@@ -45,6 +48,7 @@
 //!
 //!   // Uncomment this to execute until interrupted.
 //!   // --> smol::block_on( subscription_stream );
+//! # }
 //! ```
 
 // During the incremental Zenoh port, several backend-neutral helpers (name
