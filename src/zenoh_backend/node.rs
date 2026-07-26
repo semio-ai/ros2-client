@@ -140,31 +140,51 @@ impl Node {
   }
 
   /// Create a publisher for `topic`. `qos` overrides the topic QoS if given.
+  ///
+  /// The key's type-hash slot is filled from the [`type_hash`] table — the real
+  /// REP-2016 hash for known interop types, else a placeholder that only
+  /// matches other `ros2-client` peers. To reach native `rmw_zenoh`
+  /// subscribers of a type not in the table, compute the hash from its field
+  /// description (see [`super::type_description`]) and use
+  /// [`create_publisher_with_type_hash`].
+  ///
+  /// [`create_publisher_with_type_hash`]: Node::create_publisher_with_type_hash
   pub fn create_publisher<M: Serialize>(
     &self,
     topic: &Topic,
     qos: Option<QosProfile>,
   ) -> zenoh::Result<Publisher<M>> {
+    let sender_hash = type_hash::sender_hash(&topic.dds_type_name);
+    self.create_publisher_with_type_hash(topic, qos, sender_hash)
+  }
+
+  /// Create a publisher for `topic`, keyed with an explicit REP-2016 type hash
+  /// (`RIHS01_…`) rather than the [`type_hash`] table's known-or-placeholder
+  /// value. Native `rmw_zenoh` subscribers match on the concrete hash, so a
+  /// caller that can compute a message's real hash from its full field
+  /// description (via [`super::type_description`]) reaches them for types the
+  /// table does not cover. `hash` keys both the data publisher and this
+  /// entity's liveliness token.
+  pub fn create_publisher_with_type_hash<M: Serialize>(
+    &self,
+    topic: &Topic,
+    qos: Option<QosProfile>,
+    hash: &str,
+  ) -> zenoh::Result<Publisher<M>> {
     let qos = qos.unwrap_or_else(|| topic.qos.clone());
     let domain = self.context.domain_id();
-    let sender_hash = type_hash::sender_hash(&topic.dds_type_name);
-    // A publisher `put`s on a concrete key (real hash if known, else placeholder).
+    // A publisher `put`s on a concrete key (never the wildcard).
     let key = keyexpr::topic_keyexpr(
       domain,
       &topic.fully_qualified_name,
       &topic.dds_type_name,
-      sender_hash,
+      hash,
     );
     let zenoh_publisher = self.context.session().declare_publisher(key).wait()?;
 
     let entity_id = self.next_entity_id.fetch_add(1, Ordering::Relaxed);
-    let liveliness_key = self.entity_liveliness_key(
-      entity_id,
-      keyexpr::EntityKind::Publisher,
-      topic,
-      sender_hash,
-      &qos,
-    );
+    let liveliness_key =
+      self.entity_liveliness_key(entity_id, keyexpr::EntityKind::Publisher, topic, hash, &qos);
     let source_gid = gid::gid_from_liveliness_key(&liveliness_key);
     let token = declare_liveliness(&self.context, liveliness_key);
 

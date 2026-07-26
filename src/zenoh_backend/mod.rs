@@ -23,7 +23,10 @@ pub(crate) mod gid;
 pub(crate) mod graph_cache;
 pub(crate) mod keyexpr;
 pub(crate) mod qos_encoding;
-pub(crate) mod type_description;
+// `pub` (not `pub(crate)`) so the crate root can re-export it as
+// `ros2_client::type_description` for external REP-2016 hash computation; the
+// `pub(crate)` parent module still gates all other reachability.
+pub mod type_description;
 pub(crate) mod type_hash;
 
 // E2 — attachment (de)serialization needs the `zenoh-ext` serializer.
