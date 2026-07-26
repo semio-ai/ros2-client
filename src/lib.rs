@@ -159,6 +159,12 @@ pub use context::*;
 pub use distributions::{RosDistro, COMPILED_ROS_DISTRO};
 #[doc(inline)]
 pub use message::Message;
+/// REP-2016 type descriptions and `RIHS01_…` hashing. Backend-neutral (no
+/// `zenoh` dependency), so exposed on every build: a caller that has a
+/// message's full field description can compute the exact type hash a C++ peer
+/// embeds in its keys — e.g. to key a publisher for native `rmw_zenoh` interop.
+#[doc(inline)]
+pub use zenoh_backend::type_description;
 #[doc(inline)]
 pub use names::{ActionTypeName, MessageTypeName, Name, NodeName, ServiceTypeName};
 #[cfg(feature = "dds")]

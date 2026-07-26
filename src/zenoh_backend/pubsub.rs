@@ -249,12 +249,22 @@ impl<M> Subscription<M> {
   /// header) plus its metadata, for a runtime-typed codec instead of a
   /// compile-time message type; does not touch `M`.
   pub async fn take_raw(&self) -> Result<(Vec<u8>, MessageInfo), TakeError> {
+    let (_key, bytes, info) = self.take_raw_keyed().await?;
+    Ok((bytes, info))
+  }
+
+  /// Like [`take_raw`](Self::take_raw) but also returns the concrete key
+  /// expression the sample arrived on. The key's last chunk is the sender's
+  /// type hash, so this is the way to observe what hash a peer (e.g. a native
+  /// `rmw_zenoh` publisher) actually keys on — useful for interop debugging.
+  pub async fn take_raw_keyed(&self) -> Result<(String, Vec<u8>, MessageInfo), TakeError> {
     let sample = self
       .zenoh_subscriber
       .recv_async()
       .await
       .map_err(|_| TakeError::Closed)?;
     Ok((
+      sample.key_expr().as_str().to_string(),
       sample.payload().to_bytes().to_vec(),
       message_info_from(&sample)?,
     ))
