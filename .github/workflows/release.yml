@@ -1,0 +1,101 @@
+name: Release
+
+# Publishes ros2-client-multi-rmw to crates.io via trusted publishing: crates.io
+# issues a short-lived token to this workflow through GitHub OIDC — no long-lived
+# CARGO_REGISTRY_TOKEN secret. The crate's Trusted Publisher on crates.io points
+# at (owner: semio-ai, repo: ros2-client, workflow: release.yml, no environment).
+#
+# Runs on every push to `master` but publishes only when the version in
+# Cargo.toml is not yet on crates.io, so a release is cut by merging a version
+# bump — no tag or manual step needed.
+#
+# NOTE: this cannot be gated on the CI workflows via `workflow_run` — crates.io
+# trusted publishing rejects the `workflow_run` event trigger for security
+# reasons. Instead the wait step below polls the other workflow runs on this
+# commit and proceeds only once all of them have completed successfully.
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read # poll the other workflow runs on this commit
+  id-token: write # crates.io trusted publishing (OIDC)
+
+# One release at a time; a superseded queued run is dropped, and the version
+# gate makes the surviving run publish whatever master now holds.
+concurrency:
+  group: release
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Skip if this version is already on crates.io
+        id: gate
+        run: |
+          set -euo pipefail
+          meta=$(cargo metadata --no-deps --format-version 1)
+          crate=$(jq -r '.packages[0].name' <<<"$meta")
+          ver=$(jq -r '.packages[0].version' <<<"$meta")
+          code=$(curl -s -o /dev/null -w '%{http_code}' \
+            -H "User-Agent: ros2-client-ci (github.com/semio-ai/ros2-client)" \
+            "https://crates.io/api/v1/crates/$crate/$ver")
+          case "$code" in
+            200) echo "$crate $ver is already on crates.io — nothing to release"
+                 echo "publish=false" >> "$GITHUB_OUTPUT" ;;
+            404) echo "$crate $ver is not on crates.io yet — releasing"
+                 echo "publish=true" >> "$GITHUB_OUTPUT" ;;
+            # Anything else is a crates.io/network hiccup, not an answer; fail
+            # rather than guess (a re-run is cheap).
+            *)   echo "crates.io returned HTTP $code for $crate $ver"; exit 1 ;;
+          esac
+
+      - name: Wait for the other workflows on this commit
+        if: steps.gate.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for _ in $(seq 1 100); do
+            runs=$(gh run list --commit "$GITHUB_SHA" --limit 100 \
+              --json workflowName,status,conclusion)
+            # Other runs of this workflow (e.g. a failed earlier attempt being
+            # retried via workflow_dispatch) are not a gate.
+            others=$(jq --arg self "$GITHUB_WORKFLOW" \
+              '[.[] | select(.workflowName != $self)]' <<<"$runs")
+            bad=$(jq -r '[.[] | select(.status == "completed"
+              and (.conclusion | IN("success","skipped","neutral") | not))]
+              | map(.workflowName) | join(", ")' <<<"$others")
+            if [ -n "$bad" ]; then
+              echo "Not releasing: failed workflow(s) on this commit: $bad"
+              exit 1
+            fi
+            pending=$(jq -r '[.[] | select(.status != "completed")]
+              | map(.workflowName) | join(", ")' <<<"$others")
+            if [ -z "$pending" ]; then
+              echo "All $(jq length <<<"$others") other workflow runs succeeded."
+              exit 0
+            fi
+            echo "Still running: $pending"
+            sleep 60
+          done
+          echo "Timed out waiting for the other workflows on this commit"
+          exit 1
+
+      - name: Authenticate to crates.io (trusted publishing)
+        if: steps.gate.outputs.publish == 'true'
+        uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+
+      - name: cargo publish
+        if: steps.gate.outputs.publish == 'true'
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: cargo publish
