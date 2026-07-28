@@ -205,3 +205,151 @@ where
     self.request_receiver.deregister(poll)
   }
 }
+
+// --------------------------------------------
+// --------------------------------------------
+/// Raw (dynamic) server end of a ROS 2 Service — the counterpart of [`Server`]
+/// that exchanges CDR request/response **bytes** (full standalone CDR messages,
+/// encapsulation header included) instead of a static
+/// `S::Request`/`S::Response`.
+///
+/// One `RawServer` can back a service whose message types are known only at
+/// runtime: the caller decodes each request and encodes each response with its
+/// own (e.g. schema-directed) codec. The wire contract matches [`Server`] under
+/// [`ServiceMapping::Enhanced`], so a raw server interoperates with an ordinary
+/// typed client. Enhanced mapping only — see the `wrappers` module for why.
+pub struct RawServer {
+  request_receiver: SimpleDataReaderR<RawRequestWrapper>,
+  response_sender: DataWriterR<RawResponseWrapper>,
+}
+
+impl RawServer {
+  pub(crate) fn new(
+    node: &mut Node,
+    request_topic: &Topic,
+    response_topic: &Topic,
+    qos_request: Option<QosPolicies>,
+    qos_response: Option<QosPolicies>,
+  ) -> CreateResult<Self> {
+    let request_receiver = node
+      .create_simpledatareader::<RawRequestWrapper, ServiceDeserializerAdapter<RawRequestWrapper>>(
+        request_topic,
+        qos_request,
+      )?;
+    let response_sender = node
+      .create_datawriter::<RawResponseWrapper, ServiceSerializerAdapter<RawResponseWrapper>>(
+        response_topic,
+        qos_response,
+      )?;
+    Ok(RawServer {
+      request_receiver,
+      response_sender,
+    })
+  }
+
+  /// Receive a request as a full standalone CDR message plus its request id.
+  /// Returns `Ok(None)` if no new request has arrived.
+  pub fn receive_request(&self) -> ReadResult<Option<(RmwRequestId, Vec<u8>)>> {
+    self.request_receiver.drain_read_notifications();
+    let dcc_rw: Option<no_key::DeserializedCacheChange<RawRequestWrapper>> =
+      self.request_receiver.try_take_one()?;
+    match dcc_rw {
+      None => Ok(None),
+      Some(dcc) => {
+        let mi = MessageInfo::from(&dcc);
+        Ok(Some(dcc.into_value().unwrap_raw(&mi)))
+      }
+    }
+  }
+
+  /// Await the next request as a full standalone CDR message plus its request
+  /// id.
+  pub async fn async_receive_request(&self) -> ReadResult<(RmwRequestId, Vec<u8>)> {
+    let dcc_stream = self.request_receiver.as_async_stream();
+    pin_mut!(dcc_stream);
+    match dcc_stream.next().await {
+      Some(Err(e)) => Err(e),
+      Some(Ok(dcc)) => {
+        let mi = MessageInfo::from(&dcc);
+        Ok(dcc.into_value().unwrap_raw(&mi))
+      }
+      None => read_error_internal!("SimpleDataReader value stream unexpectedly ended!"),
+    }
+  }
+
+  /// A never-ending stream of `(request_id, request-bytes)`.
+  pub fn receive_request_stream(
+    &self,
+  ) -> impl FusedStream<Item = ReadResult<(RmwRequestId, Vec<u8>)>> + '_ {
+    Box::pin(
+      self
+        .request_receiver
+        .as_async_stream()
+        .then(move |dcc_r| async move {
+          match dcc_r {
+            Err(e) => Err(e),
+            Ok(dcc) => {
+              let mi = MessageInfo::from(&dcc);
+              Ok(dcc.into_value().unwrap_raw(&mi))
+            }
+          }
+        }),
+    )
+  }
+
+  /// Send the raw CDR `response` (a full standalone CDR message) for the
+  /// request identified by `rmw_req_id`.
+  pub fn send_response(&self, rmw_req_id: RmwRequestId, response: &[u8]) -> WriteResult<(), ()> {
+    let resp_wrapper = RawResponseWrapper::new_raw(response);
+    let write_opts = WriteOptionsBuilder::new()
+      .source_timestamp(Timestamp::now())
+      .related_sample_identity(SampleIdentity::from(rmw_req_id))
+      .build();
+    self
+      .response_sender
+      .write_with_options(resp_wrapper, write_opts)
+      .map(|_| ())
+      .map_err(|e| e.forget_data())
+  }
+
+  /// Asynchronous [`send_response`](Self::send_response).
+  pub async fn async_send_response(
+    &self,
+    rmw_req_id: RmwRequestId,
+    response: &[u8],
+  ) -> dds::WriteResult<(), ()> {
+    let resp_wrapper = RawResponseWrapper::new_raw(response);
+    let write_opts = WriteOptionsBuilder::new()
+      .source_timestamp(Timestamp::now())
+      .related_sample_identity(SampleIdentity::from(rmw_req_id))
+      .build();
+    self
+      .response_sender
+      .async_write_with_options(resp_wrapper, write_opts)
+      .await
+      .map(|_| ())
+      .map_err(|e| e.forget_data())
+  }
+}
+
+impl Evented for RawServer {
+  fn register(&self, poll: &Poll, token: Token, interest: Ready, opts: PollOpt) -> io::Result<()> {
+    self.request_receiver.register(poll, token, interest, opts)
+  }
+
+  fn reregister(
+    &self,
+    poll: &Poll,
+    token: Token,
+    interest: Ready,
+    opts: PollOpt,
+  ) -> io::Result<()> {
+    self
+      .request_receiver
+      .reregister(poll, token, interest, opts)
+  }
+
+  fn deregister(&self, poll: &Poll) -> io::Result<()> {
+    self.request_receiver.deregister(poll)
+  }
+}

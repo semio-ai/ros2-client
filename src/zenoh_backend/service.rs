@@ -267,6 +267,96 @@ impl<Req: DeserializeOwned, Resp: Serialize> Server<Req, Resp> {
   }
 }
 
+/// A ROS 2 service server over Zenoh that works with **raw CDR bytes** for the
+/// request and response, instead of a statically-typed `Req`/`Resp`.
+///
+/// This is the dynamic counterpart of [`Server`]: the caller decodes the
+/// request payload and encodes the response itself, against a schema it may
+/// only know at runtime. One `RawServer` can therefore back a service whose
+/// message types are not Rust types — e.g. a bridge that advertises one service
+/// per method discovered at runtime and (de)serialises with a schema-directed
+/// codec. The wire contract is identical to [`Server`] (the same CDR payload
+/// and request attachment), so a raw server and a typed [`Client`]
+/// interoperate.
+pub struct RawServer {
+  queryable: Queryable<FifoChannelHandler<Query>>,
+  pending: Mutex<HashMap<(u128, i64), Query>>,
+  _liveliness_token: Option<LivelinessToken>,
+}
+
+impl RawServer {
+  pub(crate) fn new(
+    queryable: Queryable<FifoChannelHandler<Query>>,
+    liveliness_token: Option<LivelinessToken>,
+  ) -> Self {
+    Self {
+      queryable,
+      pending: Mutex::new(HashMap::new()),
+      _liveliness_token: liveliness_token,
+    }
+  }
+
+  fn accept(&self, query: Query) -> Result<(RmwRequestId, Vec<u8>), ServiceError> {
+    let payload = query.payload().ok_or(ServiceError::Malformed)?;
+    let bytes = payload.to_bytes().to_vec();
+    let attachment = query.attachment().ok_or(ServiceError::Malformed)?;
+    let a = AttachmentData::from_zbytes(attachment).map_err(|_| ServiceError::Malformed)?;
+    let id = RmwRequestId {
+      writer_gid: a.source_gid,
+      sequence_number: a.sequence_number,
+    };
+    self
+      .pending
+      .lock()
+      .unwrap()
+      .insert((gid_key(a.source_gid), a.sequence_number), query);
+    Ok((id, bytes))
+  }
+
+  /// Take the next pending request (raw CDR request payload) if one is
+  /// immediately available.
+  pub fn try_receive_request(&self) -> Result<Option<(RmwRequestId, Vec<u8>)>, ServiceError> {
+    match self.queryable.try_recv() {
+      Ok(Some(query)) => self.accept(query).map(Some),
+      Ok(None) => Ok(None),
+      Err(_) => Ok(None),
+    }
+  }
+
+  /// Await the next request, returning its raw CDR request payload.
+  pub async fn async_receive_request(&self) -> Result<(RmwRequestId, Vec<u8>), ServiceError> {
+    let query = self
+      .queryable
+      .recv_async()
+      .await
+      .map_err(|_| ServiceError::NoReply)?;
+    self.accept(query)
+  }
+
+  /// Send the raw CDR response for a previously received request.
+  pub fn send_response(&self, id: RmwRequestId, response: &[u8]) -> Result<(), ServiceError> {
+    let query = self
+      .pending
+      .lock()
+      .unwrap()
+      .remove(&(gid_key(id.writer_gid), id.sequence_number))
+      .ok_or(ServiceError::UnknownRequest)?;
+    // Echo the request's seq + client gid; fresh reply timestamp.
+    let attachment = AttachmentData {
+      sequence_number: id.sequence_number,
+      source_timestamp: now_nanos(),
+      source_gid: id.writer_gid,
+    }
+    .to_zbytes();
+    query
+      .reply(query.key_expr().clone(), response.to_vec())
+      .attachment(attachment)
+      .wait()
+      .map_err(ServiceError::Zenoh)?;
+    Ok(())
+  }
+}
+
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
@@ -282,7 +372,7 @@ mod tests {
   use serde::{Deserialize, Serialize};
   use zenoh::Config;
 
-  use super::{Client, Server};
+  use super::{cdr, Client, RawServer, Server};
   use crate::{Context, ContextOptions, Name, NodeName, NodeOptions, ServiceTypeName};
 
   #[derive(Serialize, Deserialize)]
@@ -358,6 +448,68 @@ mod tests {
     let mut sum = None;
     while Instant::now() < deadline {
       if let Ok(resp) = client.call(AddTwoIntsRequest { a: 2, b: 40 }) {
+        sum = Some(resp.sum);
+        break;
+      }
+      std::thread::sleep(Duration::from_millis(200));
+    }
+
+    stop.store(true, Ordering::Relaxed);
+    let _ = server_thread.join();
+
+    assert_eq!(sum, Some(42));
+  }
+
+  #[test]
+  fn raw_server_interoperates_with_typed_client() {
+    // A `RawServer` speaks the same wire contract as `Server`, so it answers a
+    // typed `Client`: the server decodes the request CDR and encodes the
+    // response CDR itself (here with the crate's own codec, standing in for a
+    // runtime schema-directed one).
+    let srv_port = 17521;
+    let cli_port = 17522;
+    let srv_ctx =
+      Context::with_options(ContextOptions::new().zenoh_config(make_config(srv_port, None)))
+        .unwrap();
+    let cli_ctx = Context::with_options(
+      ContextOptions::new().zenoh_config(make_config(cli_port, Some(srv_port))),
+    )
+    .unwrap();
+
+    let srv_node = srv_ctx.new_node(
+      NodeName::new("/", "raw_add_server").unwrap(),
+      NodeOptions::new(),
+    );
+    let cli_node = cli_ctx.new_node(
+      NodeName::new("/", "raw_add_client").unwrap(),
+      NodeOptions::new(),
+    );
+    let stype = ServiceTypeName::new("example_interfaces", "AddTwoInts");
+    let name = Name::new("/", "raw_add_two_ints").unwrap();
+
+    let server: RawServer = srv_node.create_raw_server(&name, &stype).unwrap();
+    let client: Client<AddTwoIntsRequest, AddTwoIntsResponse> =
+      cli_node.create_client(&name, &stype).unwrap();
+
+    // The raw server decodes/encodes the CDR bytes itself and answers a + b.
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop_srv = stop.clone();
+    let server_thread = std::thread::spawn(move || {
+      let deadline = Instant::now() + Duration::from_secs(25);
+      while !stop_srv.load(Ordering::Relaxed) && Instant::now() < deadline {
+        if let Ok(Some((id, req_bytes))) = server.try_receive_request() {
+          let req: AddTwoIntsRequest = cdr::from_cdr(&req_bytes).unwrap();
+          let resp_bytes = cdr::to_cdr(&AddTwoIntsResponse { sum: req.a + req.b }).unwrap();
+          let _ = server.send_response(id, &resp_bytes);
+        }
+        std::thread::sleep(Duration::from_millis(20));
+      }
+    });
+
+    let deadline = Instant::now() + Duration::from_secs(25);
+    let mut sum = None;
+    while Instant::now() < deadline {
+      if let Ok(resp) = client.call(AddTwoIntsRequest { a: 20, b: 22 }) {
         sum = Some(resp.sum);
         break;
       }

@@ -34,7 +34,7 @@ use crate::{
   rcl_interfaces,
   ros_time::ROSTime,
   rosout::{NodeLoggingHandle, RosoutRaw},
-  service::{Client, Server, Service, ServiceMapping},
+  service::{Client, RawServer, Server, Service, ServiceMapping},
 };
 
 type ParameterFunc = dyn Fn(&str, &ParameterValue) -> SetParametersResult + Send + Sync;
@@ -1405,6 +1405,44 @@ impl Node {
     )?;
 
     Ok(s)
+  }
+
+  /// Create a **raw** service server — the dynamic counterpart of
+  /// [`create_server`](Self::create_server).
+  ///
+  /// It exchanges CDR request/response bytes (see [`RawServer`]) rather than a
+  /// static service type `S`, so it can back a service whose message types are
+  /// known only at runtime. Uses [`ServiceMapping::Enhanced`] — the only
+  /// mapping the raw path supports (and ROS 2's default) — so a raw server
+  /// interoperates with an ordinary typed client. Topics and QoS are set up
+  /// exactly as [`create_server`](Self::create_server) does.
+  pub fn create_raw_server(
+    &mut self,
+    service_name: &Name,
+    service_type_name: &ServiceTypeName,
+    request_qos: QosPolicies,
+    response_qos: QosPolicies,
+  ) -> CreateResult<RawServer> {
+    let rq_topic = self.ros_context.domain_participant().create_topic(
+      service_name.to_dds_name("rq", &self.node_name, "Request"),
+      service_type_name.dds_request_type(),
+      &request_qos,
+      TopicKind::NoKey,
+    )?;
+    let rs_topic = self.ros_context.domain_participant().create_topic(
+      service_name.to_dds_name("rr", &self.node_name, "Reply"),
+      service_type_name.dds_response_type(),
+      &response_qos,
+      TopicKind::NoKey,
+    )?;
+
+    RawServer::new(
+      self,
+      &rq_topic,
+      &rs_topic,
+      Some(request_qos),
+      Some(response_qos),
+    )
   }
 
   pub fn create_action_client<A>(
