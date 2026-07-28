@@ -24,7 +24,7 @@ use super::{
   pubsub::{Publisher, Subscription},
   qos_encoding,
   rosout::{Log, Logger},
-  service::{Client, Server},
+  service::{Client, RawServer, Server},
   type_hash,
 };
 use crate::{
@@ -351,6 +351,46 @@ impl Node {
     let token = declare_liveliness(&self.context, liveliness_key);
 
     Ok(Server::new(queryable, token))
+  }
+
+  /// Create a **raw** service server for `service` of the given service type —
+  /// the dynamic counterpart of [`create_server`](Self::create_server).
+  ///
+  /// The server exchanges raw CDR request/response bytes (see [`RawServer`])
+  /// rather than a statically-typed `Req`/`Resp`, so it can back a service
+  /// whose message types are known only at runtime. The wire contract is
+  /// identical to [`create_server`](Self::create_server), so a raw server
+  /// interoperates with a typed client (and vice versa).
+  pub fn create_raw_server(
+    &self,
+    service: &Name,
+    service_type: &ServiceTypeName,
+  ) -> zenoh::Result<RawServer> {
+    let fqn = resolve_fqn(service, &self.node_name);
+    let dds_type = service_type.dds_service_type();
+    let domain = self.context.domain_id();
+    let hash = type_hash::sender_hash(&dds_type);
+    // The server's queryable is concrete (real-or-placeholder hash).
+    let key = keyexpr::topic_keyexpr(domain, &fqn, &dds_type, hash);
+    let queryable = self
+      .context
+      .session()
+      .declare_queryable(key)
+      .complete(true)
+      .wait()?;
+
+    let entity_id = self.next_entity_id.fetch_add(1, Ordering::Relaxed);
+    let liveliness_key = self.liveliness_key(
+      entity_id,
+      keyexpr::EntityKind::ServiceServer,
+      &fqn,
+      &dds_type,
+      hash,
+      &QosProfile::default(),
+    );
+    let token = declare_liveliness(&self.context, liveliness_key);
+
+    Ok(RawServer::new(queryable, token))
   }
 
   /// Create an action client for `action` of the given action type.

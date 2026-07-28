@@ -248,6 +248,111 @@ impl<R: Message> ResponseWrapper<R> {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Raw (dynamic) wrappers: the request/response as CDR *bytes*, for a service
+// whose message types are only known at runtime (see `RawServer`). Restricted
+// to `ServiceMapping::Enhanced` — the mapping ROS 2's default rmw uses —
+// because it carries no in-payload service header, so the message body starts
+// at CDR offset 0 and a body encoded by a standalone-CDR codec drops straight
+// in. (Basic/Cyclone prepend a header, which shifts the body's alignment origin
+// and would corrupt a pre-encoded body.)
+// ---------------------------------------------------------------------------
+
+/// The 4-byte CDR encapsulation header (`representation_identifier` +
+/// `representation_options`) for `encoding`. rustdds carries the encapsulation
+/// outside the wrapper's `serialized_message`, so the raw path adds it back to
+/// present a full standalone CDR message (and strips it before writing).
+fn encapsulation_header(encoding: RepresentationIdentifier) -> [u8; 4] {
+  if encoding == RepresentationIdentifier::CDR_BE {
+    [0x00, 0x00, 0x00, 0x00]
+  } else {
+    // CDR_LE — what ROS 2's default rmw and the value-plane codec emit.
+    [0x00, 0x01, 0x00, 0x00]
+  }
+}
+
+/// A CDR body prefixed with its encapsulation header — a full standalone CDR
+/// message.
+fn encapsulated(encoding: RepresentationIdentifier, body: &[u8]) -> Vec<u8> {
+  let mut message = Vec::with_capacity(4 + body.len());
+  message.extend_from_slice(&encapsulation_header(encoding));
+  message.extend_from_slice(body);
+  message
+}
+
+#[derive(Clone)]
+pub(crate) struct RawRequestWrapper {
+  serialized_message: Bytes,
+  encoding: RepresentationIdentifier,
+}
+
+impl Wrapper for RawRequestWrapper {
+  fn from_bytes_and_ri(input_bytes: &[u8], encoding: RepresentationIdentifier) -> Self {
+    RawRequestWrapper {
+      serialized_message: Bytes::copy_from_slice(input_bytes),
+      encoding,
+    }
+  }
+  fn bytes(&self) -> Bytes {
+    self.serialized_message.clone()
+  }
+}
+
+impl RawRequestWrapper {
+  /// The request as a full standalone CDR message plus its [`RmwRequestId`].
+  /// Enhanced mapping: the payload is the message body, so prepend the
+  /// encapsulation header; the id comes from the related-sample-identity inline
+  /// QoS (with the FastDDS `SEQUENCENUMBER_UNKNOWN` fallback the typed path
+  /// uses).
+  pub(super) fn unwrap_raw(&self, message_info: &MessageInfo) -> (RmwRequestId, Vec<u8>) {
+    let mut rmw_req_id =
+      RmwRequestId::from(message_info.related_sample_identity().unwrap_or_else(|| {
+        let backup_identity = message_info.sample_identity();
+        warn!(
+          "RawRequestWrapper::unwrap_raw: related_sample_identity missing. Using sample_identity = \
+           {backup_identity:?}"
+        );
+        backup_identity
+      }));
+    if rmw_req_id.sequence_number == SequenceNumber::UNKNOWN {
+      rmw_req_id.sequence_number = message_info.sample_identity().sequence_number;
+    }
+    (
+      rmw_req_id,
+      encapsulated(self.encoding, &self.serialized_message),
+    )
+  }
+}
+
+pub(crate) struct RawResponseWrapper {
+  serialized_message: Bytes,
+}
+
+impl Wrapper for RawResponseWrapper {
+  fn from_bytes_and_ri(input_bytes: &[u8], _encoding: RepresentationIdentifier) -> Self {
+    RawResponseWrapper {
+      serialized_message: Bytes::copy_from_slice(input_bytes),
+    }
+  }
+  fn bytes(&self) -> Bytes {
+    self.serialized_message.clone()
+  }
+}
+
+impl RawResponseWrapper {
+  /// Build a response wrapper from a full standalone CDR message. Enhanced
+  /// mapping: no header, so the wire body is the message body — strip the
+  /// 4-byte encapsulation header (the DDS writer re-adds it). A message
+  /// shorter than the header is passed through unchanged (it cannot be a
+  /// valid CDR message; the peer will reject it).
+  pub(super) fn new_raw(response: &[u8]) -> Self {
+    let body = response.get(4..).unwrap_or(response);
+    RawResponseWrapper {
+      serialized_message: Bytes::copy_from_slice(body),
+    }
+  }
+}
+
 // Basic mode header is specified in
 // RPC over DDS Section "7.5.1.1.1 Common Types"
 #[derive(Serialize, Deserialize)]

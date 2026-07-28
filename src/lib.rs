@@ -182,7 +182,7 @@ pub use qos::QosProfile;
 pub use pubsub::*;
 #[cfg(feature = "dds")]
 #[doc(inline)]
-pub use service::{AService, Client, Server, Service, ServiceMapping};
+pub use service::{AService, Client, RawServer, Server, Service, ServiceMapping};
 #[cfg(feature = "dds")]
 #[doc(inline)]
 pub use action::{Action, ActionTypes};
@@ -205,7 +205,7 @@ pub use zenoh_backend::node::{Node, NodeOptions, Topic};
 pub use zenoh_backend::pubsub::{MessageInfo, Publisher, Subscription};
 #[cfg(feature = "zenoh")]
 #[doc(inline)]
-pub use zenoh_backend::service::{Client, RmwRequestId, Server};
+pub use zenoh_backend::service::{Client, RawServer, RmwRequestId, Server};
 #[cfg(feature = "zenoh")]
 #[doc(inline)]
 pub use zenoh_backend::action::{ActionClient, ActionServer, GoalId};
