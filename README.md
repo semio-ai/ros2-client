@@ -281,6 +281,17 @@ Start server: `ros2 run examples_rclpy_minimal_service service`
 
 Run client: `cargo run --example=ros2_service_client`
 
+## Used by
+
+[arora-sdk](https://github.com/semio-ai/arora-sdk) builds on this client to give
+an [Arora](https://github.com/semio-ai/arora-sdk) device a ROS 2 surface over
+either backend: `arora-bridge-ros2` (ROS as the device's remote — keys as topics,
+methods as services, task runs as actions) and `arora-hal-ros2` (ROS as the
+device's own hardware). The ROS 2 message *definitions* they carry — including
+the [`hri_msgs`](https://github.com/ros4hri) / ROS4HRI human-robot-interaction
+vocabulary — live in `arora-msgs-ros2`; this crate is the message-type-agnostic
+transport underneath.
+
 ## Related Work
 
 * [ros2_rust](https://github.com/ros2-rust/ros2_rust) is closest(?) to an official ROS2 client library. It links to ROS2 `rcl` library written in C.
