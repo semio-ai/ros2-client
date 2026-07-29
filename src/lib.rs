@@ -182,7 +182,7 @@ pub use qos::QosProfile;
 pub use pubsub::*;
 #[cfg(feature = "dds")]
 #[doc(inline)]
-pub use service::{AService, Client, RawServer, Server, Service, ServiceMapping};
+pub use service::{AService, Client, RawServer, RmwRequestId, Server, Service, ServiceMapping};
 #[cfg(feature = "dds")]
 #[doc(inline)]
 pub use action::{Action, ActionTypes, RawActionServer};
