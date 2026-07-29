@@ -16,12 +16,12 @@ use zenoh::{liveliness::LivelinessToken, Wait};
 use super::{
   action::{
     ActionClient, ActionServer, FeedbackMessage, GetResultRequest, GetResultResponse,
-    SendGoalRequest, SendGoalResponse,
+    RawActionServer, SendGoalRequest, SendGoalResponse,
   },
   context::Context,
   gid, keyexpr,
   parameters::{ParameterClient, ParameterEvent, ParameterServer},
-  pubsub::{Publisher, Subscription},
+  pubsub::{Publisher, RawPublisher, Subscription},
   qos_encoding,
   rosout::{Log, Logger},
   service::{Client, RawServer, Server},
@@ -189,6 +189,19 @@ impl Node {
     let token = declare_liveliness(&self.context, liveliness_key);
 
     Ok(Publisher::new(zenoh_publisher, source_gid, token))
+  }
+
+  /// Create a **raw** publisher for `topic` — the dynamic counterpart of
+  /// [`create_publisher`](Self::create_publisher): it publishes pre-encoded
+  /// full CDR messages for a topic whose message type is known only at
+  /// runtime. The topic's declared type (and its type-hash slot, from the
+  /// [`type_hash`] table) is announced exactly as for a typed publisher.
+  pub fn create_raw_publisher(
+    &self,
+    topic: &Topic,
+    qos: Option<QosProfile>,
+  ) -> zenoh::Result<RawPublisher> {
+    Ok(RawPublisher::new(self.create_publisher::<()>(topic, qos)?))
   }
 
   /// Create a subscription for `topic`. `qos` overrides the topic QoS if given.
@@ -484,6 +497,53 @@ impl Node {
       cancel_goal,
       status,
     ))
+  }
+
+  /// Create a **raw** action server for `action` — the dynamic counterpart of
+  /// [`create_action_server`](Self::create_action_server), for actions whose
+  /// goal, result, and feedback types are known only at runtime. The endpoints
+  /// that embed those types are raw (send_goal, get_result, feedback); the
+  /// fixed `action_msgs` endpoints (cancel_goal, status) stay typed. See
+  /// [`RawActionServer`].
+  pub fn create_raw_action_server(
+    &self,
+    action: &Name,
+    action_type: &ActionTypeName,
+  ) -> zenoh::Result<RawActionServer> {
+    let fqn = resolve_fqn(action, &self.node_name);
+    let send_goal = self.create_raw_server(
+      &action_sub_name(&fqn, "send_goal")?,
+      &action_type.dds_action_service("_SendGoal"),
+    )?;
+    let get_result = self.create_raw_server(
+      &action_sub_name(&fqn, "get_result")?,
+      &action_type.dds_action_service("_GetResult"),
+    )?;
+    let feedback_topic = self.create_topic(
+      &action_sub_name(&fqn, "feedback")?,
+      action_type.dds_action_topic("_FeedbackMessage"),
+      &QosProfile::default(),
+    );
+    let feedback = self.create_raw_publisher(&feedback_topic, None)?;
+    // cancel_goal + status use the shared `action_msgs` types (not
+    // action-namespaced), matching rmw_zenoh / the DDS backend.
+    let cancel_goal = self.create_server::<CancelGoalRequest, CancelGoalResponse>(
+      &action_sub_name(&fqn, "cancel_goal")?,
+      &ServiceTypeName::new("action_msgs", "CancelGoal"),
+    )?;
+    let status_topic = self.create_topic(
+      &action_sub_name(&fqn, "status")?,
+      MessageTypeName::new("action_msgs", "GoalStatusArray"),
+      &QosProfile::default(),
+    );
+    let status = self.create_publisher::<GoalStatusArray>(&status_topic, None)?;
+    Ok(RawActionServer {
+      send_goal,
+      get_result,
+      feedback,
+      cancel_goal,
+      status,
+    })
   }
 
   /// Create a [`ParameterServer`] for this node: the six `rcl_interfaces`

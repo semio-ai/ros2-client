@@ -9,7 +9,9 @@ use crate::message::Message;
 pub mod client;
 pub mod request_id;
 pub mod server;
-pub(super) mod wrappers;
+// `pub(crate)`: the raw topic publisher (`pubsub::RawPublisher`) reuses the
+// byte pass-through (de)serializer adapters defined here.
+pub(crate) mod wrappers;
 
 pub use request_id::*;
 use wrappers::*;

@@ -19,6 +19,10 @@ pub use server::{
   GoalEndStatus, GoalError, NewGoalHandle,
 };
 
+mod raw_server;
+#[doc(inline)]
+pub use raw_server::RawActionServer;
+
 /// A trait to define an Action type
 pub trait ActionTypes {
   type GoalType: Message + Clone; // Used by client to set a goal for the server
