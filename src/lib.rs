@@ -185,7 +185,7 @@ pub use pubsub::*;
 pub use service::{AService, Client, RawServer, Server, Service, ServiceMapping};
 #[cfg(feature = "dds")]
 #[doc(inline)]
-pub use action::{Action, ActionTypes};
+pub use action::{Action, ActionTypes, RawActionServer};
 #[doc(inline)]
 pub use wide_string::WString;
 #[doc(inline)]
@@ -202,13 +202,13 @@ pub use zenoh_backend::context::{Context, ContextOptions};
 pub use zenoh_backend::node::{Node, NodeOptions, Topic};
 #[cfg(feature = "zenoh")]
 #[doc(inline)]
-pub use zenoh_backend::pubsub::{MessageInfo, Publisher, Subscription};
+pub use zenoh_backend::pubsub::{MessageInfo, Publisher, RawPublisher, Subscription};
 #[cfg(feature = "zenoh")]
 #[doc(inline)]
 pub use zenoh_backend::service::{Client, RawServer, RmwRequestId, Server};
 #[cfg(feature = "zenoh")]
 #[doc(inline)]
-pub use zenoh_backend::action::{ActionClient, ActionServer, GoalId};
+pub use zenoh_backend::action::{ActionClient, ActionServer, GoalId, RawActionServer};
 #[cfg(feature = "zenoh")]
 #[doc(inline)]
 pub use zenoh_backend::parameters::{ParameterClient, ParameterEvent, ParameterServer};

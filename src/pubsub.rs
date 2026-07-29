@@ -92,6 +92,119 @@ impl<M: Serialize> Publisher<M> {
 // ----------------------------------------------------
 // ----------------------------------------------------
 
+/// The raw sample wrapper behind [`RawPublisher`]: pre-serialized CDR bytes
+/// written verbatim as the sample payload, through the same byte pass-through
+/// adapter the raw service endpoints use. The stored bytes are the message
+/// *body* — the 4-byte encapsulation header is stripped on construction, since
+/// the DDS writer frames the payload with its own representation header.
+pub struct RawMessageWrapper {
+  serialized_message: bytes::Bytes,
+}
+
+impl crate::service::wrappers::Wrapper for RawMessageWrapper {
+  fn from_bytes_and_ri(input_bytes: &[u8], _encoding: RepresentationIdentifier) -> Self {
+    RawMessageWrapper {
+      serialized_message: bytes::Bytes::copy_from_slice(input_bytes),
+    }
+  }
+  fn bytes(&self) -> bytes::Bytes {
+    self.serialized_message.clone()
+  }
+}
+
+impl RawMessageWrapper {
+  /// Wrap a full standalone CDR message. A message shorter than the 4-byte
+  /// encapsulation header is passed through unchanged (it cannot be valid CDR;
+  /// the peer will reject it).
+  fn new_raw(message: &[u8]) -> Self {
+    let body = message.get(4..).unwrap_or(message);
+    RawMessageWrapper {
+      serialized_message: bytes::Bytes::copy_from_slice(body),
+    }
+  }
+}
+
+/// A **raw** ROS2 Publisher — the dynamic counterpart of [`Publisher`], and the
+/// topic-plane sibling of [`RawServer`](crate::service::RawServer).
+///
+/// It publishes pre-serialized full standalone CDR messages (encapsulation
+/// header included) rather than a compile-time `M: Serialize`, so it can back a
+/// topic whose message type is known only at runtime — e.g. one synthesised
+/// from a runtime type description and encoded by a schema-directed codec.
+/// Interoperates with an ordinary typed subscriber of the topic's declared
+/// type; little-endian CDR only (`CDR_LE`), matching the raw service
+/// endpoints.
+///
+/// Created with
+/// [`Node::create_raw_publisher`](crate::Node::create_raw_publisher).
+pub struct RawPublisher {
+  datawriter: no_key::DataWriter<
+    RawMessageWrapper,
+    crate::service::wrappers::ServiceSerializerAdapter<RawMessageWrapper>,
+  >,
+}
+
+impl RawPublisher {
+  // Created from Node.
+  pub(crate) fn new(
+    datawriter: no_key::DataWriter<
+      RawMessageWrapper,
+      crate::service::wrappers::ServiceSerializerAdapter<RawMessageWrapper>,
+    >,
+  ) -> RawPublisher {
+    RawPublisher { datawriter }
+  }
+
+  /// Publish a full standalone CDR message (4-byte encapsulation header +
+  /// little-endian body).
+  pub fn publish(&self, cdr_message: &[u8]) -> WriteResult<(), ()> {
+    self
+      .datawriter
+      .write(
+        RawMessageWrapper::new_raw(cdr_message),
+        Some(Timestamp::now()),
+      )
+      .map_err(|e| e.forget_data())
+  }
+
+  /// Asynchronous [`publish`](Self::publish).
+  pub async fn async_publish(&self, cdr_message: &[u8]) -> WriteResult<(), ()> {
+    self
+      .datawriter
+      .async_write(
+        RawMessageWrapper::new_raw(cdr_message),
+        Some(Timestamp::now()),
+      )
+      .await
+      .map_err(|e| e.forget_data())
+  }
+
+  pub fn guid(&self) -> rustdds::GUID {
+    self.datawriter.guid()
+  }
+
+  pub fn gid(&self) -> Gid {
+    self.guid().into()
+  }
+
+  /// Returns the count of currently matched subscribers.
+  ///
+  /// `my_node` must be the Node that created this Publisher, or the result is
+  /// undefined.
+  pub fn get_subscription_count(&self, my_node: &Node) -> usize {
+    my_node.get_subscription_count(self.guid())
+  }
+
+  /// Waits until there is at least one matched subscription on this topic,
+  /// possibly forever.
+  pub fn wait_for_subscription(&self, my_node: &Node) -> impl Future<Output = ()> + Send {
+    my_node.wait_for_reader(self.guid())
+  }
+}
+
+// ----------------------------------------------------
+// ----------------------------------------------------
+
 /// A ROS2 Subscription
 ///
 /// Corresponds to a (simplified) [`DataReader`](rustdds::no_key::DataReader) in

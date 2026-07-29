@@ -162,6 +162,63 @@ impl<M: Serialize> Publisher<M> {
   }
 }
 
+/// A **raw** publisher — the dynamic counterpart of [`Publisher`], and the
+/// topic-plane sibling of [`RawServer`](super::service::RawServer): it
+/// publishes pre-encoded full CDR messages (4-byte encapsulation header
+/// included) for a topic whose message type is known only at runtime. A thin
+/// carrier for [`Publisher::publish_raw`] with no compile-time message type,
+/// mirroring the DDS backend's `RawPublisher`.
+///
+/// Created with `Node::create_raw_publisher`.
+pub struct RawPublisher {
+  inner: Publisher<()>,
+}
+
+impl RawPublisher {
+  pub(crate) fn new(inner: Publisher<()>) -> Self {
+    Self { inner }
+  }
+
+  /// The attachment for the next raw sample (advancing the sequence number).
+  fn attachment(&self) -> zenoh::bytes::ZBytes {
+    let sequence_number = self.inner.seq.fetch_add(1, Ordering::Relaxed) + 1;
+    AttachmentData {
+      sequence_number,
+      source_timestamp: now_nanos(),
+      source_gid: self.inner.source_gid,
+    }
+    .to_zbytes()
+  }
+
+  /// Publish a full CDR message (4-byte encapsulation header + body),
+  /// blocking.
+  pub fn publish(&self, cdr_message: &[u8]) -> Result<(), PublishError> {
+    self
+      .inner
+      .zenoh_publisher
+      .put(cdr_message.to_vec())
+      .attachment(self.attachment())
+      .wait()
+      .map_err(PublishError::Zenoh)
+  }
+
+  /// Asynchronous [`publish`](Self::publish).
+  pub async fn async_publish(&self, cdr_message: &[u8]) -> Result<(), PublishError> {
+    self
+      .inner
+      .zenoh_publisher
+      .put(cdr_message.to_vec())
+      .attachment(self.attachment())
+      .await
+      .map_err(PublishError::Zenoh)
+  }
+
+  /// This publisher's 16-byte source GID.
+  pub fn gid(&self) -> [u8; 16] {
+    self.inner.gid()
+  }
+}
+
 impl<M> Publisher<M> {
   /// Publish pre-encoded CDR bytes (which must include the 4-byte encapsulation
   /// header) on this publisher's topic, with the standard rmw_zenoh attachment.

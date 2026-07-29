@@ -19,8 +19,9 @@
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 use super::{
-  pubsub::{PublishError, Publisher, Subscription},
-  service::{Client, RmwRequestId, Server, ServiceError},
+  cdr,
+  pubsub::{PublishError, Publisher, RawPublisher, Subscription},
+  service::{Client, RawServer, RmwRequestId, Server, ServiceError},
 };
 use crate::{
   action_msgs::{
@@ -271,6 +272,120 @@ impl<G: DeserializeOwned, R: Serialize, F: Serialize> ActionServer<G, R, F> {
   /// Publish the current goal-status array on the `status` topic.
   pub fn publish_status(&self, status_list: Vec<GoalStatus>) -> Result<(), PublishError> {
     self.status.publish(GoalStatusArray { status_list })
+  }
+}
+
+// ---------------------------------------------------------------------------
+
+/// A **raw** action server: the dynamic counterpart of [`ActionServer`], for
+/// actions whose goal, result, and feedback types are known only at runtime.
+/// Mirrors the DDS backend's `RawActionServer` surface.
+///
+/// The three endpoints that embed the action's user-defined types are
+/// byte-level (send_goal and get_result on [`RawServer`]s, feedback on a
+/// [`RawPublisher`]); cancel_goal and status keep their fixed `action_msgs`
+/// types and stay typed. Raw bytes are always full CDR messages (4-byte
+/// encapsulation header + body). The goal lifecycle (acceptance, states,
+/// result caching) is the caller's — this type is transport, not policy.
+///
+/// Created with `Node::create_raw_action_server`.
+pub struct RawActionServer {
+  pub(crate) send_goal: RawServer,
+  pub(crate) get_result: RawServer,
+  pub(crate) feedback: RawPublisher,
+  pub(crate) cancel_goal: Server<CancelGoalRequest, CancelGoalResponse>,
+  pub(crate) status: Publisher<GoalStatusArray>,
+}
+
+impl RawActionServer {
+  /// Await the next goal request, as a full CDR `SendGoal` request message:
+  /// `goal_id: uint8[16]` first, the goal fields after it. The caller decodes
+  /// it with its runtime codec.
+  pub async fn receive_goal_request(&self) -> Result<(RmwRequestId, Vec<u8>), ServiceError> {
+    self.send_goal.async_receive_request().await
+  }
+
+  /// Take a pending goal request if one is immediately available — the
+  /// non-blocking [`receive_goal_request`](Self::receive_goal_request).
+  pub fn try_receive_goal_request(&self) -> Option<(RmwRequestId, Vec<u8>)> {
+    self.send_goal.try_receive_request().ok().flatten()
+  }
+
+  /// Answer a goal request: the fixed `SendGoal` response (`accepted` +
+  /// `stamp`), encoded here. The caller keeps `stamp` — the status array and
+  /// the cancel policy's accepted-at-or-before matching use it.
+  pub fn respond_goal(
+    &self,
+    id: RmwRequestId,
+    accepted: bool,
+    stamp: Time,
+  ) -> Result<(), ServiceError> {
+    let response = cdr::to_cdr(&SendGoalResponse { accepted, stamp }).map_err(ServiceError::Cdr)?;
+    self.send_goal.send_response(id, &response)
+  }
+
+  /// Await the next cancel request, surfaced as the [`GoalInfo`] selecting the
+  /// goals to cancel (per the `action_msgs/CancelGoal` policy: a zero goal id
+  /// and/or zero stamp widen the selection).
+  pub async fn receive_cancel_request(&self) -> Result<(RmwRequestId, GoalInfo), ServiceError> {
+    let (id, request) = self.cancel_goal.async_receive_request().await?;
+    Ok((id, request.goal_info))
+  }
+
+  /// Take a pending cancel request if one is immediately available — the
+  /// non-blocking [`receive_cancel_request`](Self::receive_cancel_request).
+  pub fn try_receive_cancel_request(&self) -> Option<(RmwRequestId, GoalInfo)> {
+    match self.cancel_goal.try_receive_request() {
+      Ok(Some((id, request))) => Some((id, request.goal_info)),
+      _ => None,
+    }
+  }
+
+  /// Answer a cancel request with the goals that transition to CANCELING.
+  pub fn respond_cancel(
+    &self,
+    id: RmwRequestId,
+    response: CancelGoalResponse,
+  ) -> Result<(), ServiceError> {
+    self.cancel_goal.send_response(id, response)
+  }
+
+  /// Await the next result request, decoded here (its one field is the fixed
+  /// `goal_id`).
+  pub async fn receive_result_request(&self) -> Result<(RmwRequestId, GoalId), ServiceError> {
+    let (id, bytes) = self.get_result.async_receive_request().await?;
+    let request = cdr::from_cdr::<GetResultRequest>(&bytes).map_err(ServiceError::Cdr)?;
+    Ok((id, request.goal_id))
+  }
+
+  /// Take a pending result request if one is immediately available — the
+  /// non-blocking [`receive_result_request`](Self::receive_result_request).
+  pub fn try_receive_result_request(&self) -> Option<(RmwRequestId, GoalId)> {
+    let (id, bytes) = self.get_result.try_receive_request().ok().flatten()?;
+    let request = cdr::from_cdr::<GetResultRequest>(&bytes).ok()?;
+    Some((id, request.goal_id))
+  }
+
+  /// Answer a result request with a caller-built full CDR `GetResult` response
+  /// message: `status: int8` first (the terminal `action_msgs/GoalStatus`
+  /// value), the result fields after it.
+  pub fn respond_result_raw(
+    &self,
+    id: RmwRequestId,
+    cdr_response: &[u8],
+  ) -> Result<(), ServiceError> {
+    self.get_result.send_response(id, cdr_response)
+  }
+
+  /// Publish a caller-built full CDR feedback message: `goal_id: uint8[16]`
+  /// first, the feedback fields after it.
+  pub fn publish_feedback_raw(&self, cdr_message: &[u8]) -> Result<(), PublishError> {
+    self.feedback.publish(cdr_message)
+  }
+
+  /// Publish the status of every known goal.
+  pub fn publish_statuses(&self, statuses: GoalStatusArray) -> Result<(), PublishError> {
+    self.status.publish(statuses)
   }
 }
 
@@ -558,6 +673,215 @@ mod tests {
       status_of(goal_id, GoalStatusEnum::Canceled),
       "never saw the goal reach Canceled on /status"
     );
+
+    stop.store(true, Ordering::Relaxed);
+    let _ = server_thread.join();
+  }
+
+  /// A **typed** [`ActionClient`] against a [`RawActionServer`]: the raw
+  /// byte-level path interoperates with an ordinary typed peer over the full
+  /// goal lifecycle. LookAt-shaped, the driving real-world action
+  /// (`interaction_skills/action/LookAt`): the goal names a gaze policy and a
+  /// target, the server tracks indefinitely (feedback, never succeeding on its
+  /// own), the client cancels, and the result carries an errno
+  /// (`ROS_ECANCELED`). Server-side, the raw messages are built and parsed
+  /// with serde mirrors of the wire layout — the stand-in for a runtime codec,
+  /// producing byte-identical CDR.
+  #[test]
+  fn raw_action_server_serves_a_typed_look_at_client() {
+    use crate::{
+      action_msgs::{
+        CancelGoalResponse, CancelGoalResponseEnum, GoalInfo, GoalStatus, GoalStatusArray,
+        GoalStatusEnum,
+      },
+      builtin_interfaces::Time,
+    };
+
+    // Client-side (typed) messages.
+    #[derive(Serialize, Deserialize, Clone)]
+    struct LookAtGoal {
+      policy: String,
+      x: f64,
+    }
+    #[derive(Serialize, Deserialize)]
+    struct LookAtFeedback {
+      gaze_error: f32,
+    }
+    #[derive(Serialize, Deserialize)]
+    struct LookAtResult {
+      errno: i32,
+    }
+
+    // Server-side mirrors of the raw wire layouts.
+    #[derive(Serialize, Deserialize)]
+    struct RawSendGoal {
+      goal_id: GoalId,
+      policy: String,
+      x: f64,
+    }
+    #[derive(Serialize, Deserialize)]
+    struct RawFeedback {
+      goal_id: GoalId,
+      gaze_error: f32,
+    }
+    #[derive(Serialize, Deserialize)]
+    struct RawResultResponse {
+      status: i8,
+      errno: i32,
+    }
+
+    /// `interaction_skills` `ROS_ECANCELED`-style errno.
+    const ECANCELED: i32 = -125;
+
+    let srv_port = 17550;
+    let cli_port = 17551;
+    let srv_ctx =
+      Context::with_options(ContextOptions::new().zenoh_config(make_config(srv_port, None)))
+        .unwrap();
+    let cli_ctx = Context::with_options(
+      ContextOptions::new().zenoh_config(make_config(cli_port, Some(srv_port))),
+    )
+    .unwrap();
+
+    let srv_node = srv_ctx.new_node(
+      NodeName::new("/", "look_at_server").unwrap(),
+      NodeOptions::new(),
+    );
+    let cli_node = cli_ctx.new_node(
+      NodeName::new("/", "look_at_client").unwrap(),
+      NodeOptions::new(),
+    );
+    let atype = crate::ActionTypeName::new("interaction_skills", "LookAt");
+    let name = Name::new("/skill", "look_at").unwrap();
+
+    let server: super::RawActionServer = srv_node.create_raw_action_server(&name, &atype).unwrap();
+    let client: ActionClient<LookAtGoal, LookAtResult, LookAtFeedback> =
+      cli_node.create_action_client(&name, &atype).unwrap();
+
+    // Server: accept goals raw, track (feedback) until canceled, answer the
+    // result with the errno.
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop_srv = stop.clone();
+    let server_thread = std::thread::spawn(move || {
+      let deadline = Instant::now() + Duration::from_secs(30);
+      let mut canceled: BTreeMap<GoalId, bool> = BTreeMap::new();
+      let mut pending_results: Vec<(crate::RmwRequestId, GoalId)> = Vec::new();
+      while !stop_srv.load(Ordering::Relaxed) && Instant::now() < deadline {
+        if let Some((id, bytes)) = server.try_receive_goal_request() {
+          // The runtime-codec stand-in: parse goal_id + goal from the bytes.
+          let goal = super::cdr::from_cdr::<RawSendGoal>(&bytes).expect("goal decodes");
+          assert_eq!(goal.policy, "track");
+          assert_eq!(goal.x, 1.5);
+          server
+            .respond_goal(id, true, Time::ZERO)
+            .expect("goal response sends");
+          canceled.insert(goal.goal_id, false);
+          let _ = server.publish_statuses(GoalStatusArray {
+            status_list: vec![GoalStatus {
+              goal_info: GoalInfo {
+                goal_id: goal.goal_id,
+                stamp: Time::ZERO,
+              },
+              status: GoalStatusEnum::Executing,
+            }],
+          });
+          // Tracking: one feedback tick, raw.
+          let feedback = super::cdr::to_cdr(&RawFeedback {
+            goal_id: goal.goal_id,
+            gaze_error: 0.25,
+          })
+          .unwrap();
+          server
+            .publish_feedback_raw(&feedback)
+            .expect("feedback publishes");
+        }
+        if let Some((id, goal_info)) = server.try_receive_cancel_request() {
+          canceled.insert(goal_info.goal_id, true);
+          server
+            .respond_cancel(
+              id,
+              CancelGoalResponse {
+                return_code: CancelGoalResponseEnum::None,
+                goals_canceling: vec![goal_info.clone()],
+              },
+            )
+            .expect("cancel response sends");
+          let _ = server.publish_statuses(GoalStatusArray {
+            status_list: vec![GoalStatus {
+              goal_info,
+              status: GoalStatusEnum::Canceled,
+            }],
+          });
+        }
+        if let Some((id, goal_id)) = server.try_receive_result_request() {
+          pending_results.push((id, goal_id));
+        }
+        // A canceled goal's result resolves with the errno.
+        pending_results.retain(|(id, goal_id)| {
+          if canceled.get(goal_id).copied().unwrap_or(false) {
+            let response = super::cdr::to_cdr(&RawResultResponse {
+              status: goal_status::CANCELED,
+              errno: ECANCELED,
+            })
+            .unwrap();
+            server
+              .respond_result_raw(*id, &response)
+              .expect("result response sends");
+            false
+          } else {
+            true
+          }
+        });
+        std::thread::sleep(Duration::from_millis(20));
+      }
+    });
+
+    // Client: send the goal (retry until the graph connects), see feedback,
+    // cancel, and fetch the canceled result.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let goal_id = loop {
+      assert!(Instant::now() < deadline, "goal never accepted");
+      match client.send_goal(LookAtGoal {
+        policy: "track".to_string(),
+        x: 1.5,
+      }) {
+        Ok((goal_id, true)) => break goal_id,
+        _ => std::thread::sleep(Duration::from_millis(100)),
+      }
+    };
+
+    let feedback = loop {
+      assert!(Instant::now() < deadline, "feedback never arrived");
+      if let Some((id, feedback)) = client.take_feedback() {
+        assert_eq!(id, goal_id);
+        break feedback;
+      }
+      std::thread::sleep(Duration::from_millis(50));
+    };
+    assert_eq!(feedback.gaze_error, 0.25);
+
+    let response = loop {
+      assert!(Instant::now() < deadline, "cancel never answered");
+      if let Ok(response) = client.cancel_goal(goal_id) {
+        break response;
+      }
+      std::thread::sleep(Duration::from_millis(100));
+    };
+    assert_eq!(response.return_code, CancelGoalResponseEnum::None);
+    assert!(response
+      .goals_canceling
+      .iter()
+      .any(|g| g.goal_id == goal_id));
+
+    let (status, result) = loop {
+      assert!(Instant::now() < deadline, "result never arrived");
+      if let Ok(result) = client.get_result(goal_id) {
+        break result;
+      }
+      std::thread::sleep(Duration::from_millis(100));
+    };
+    assert_eq!(status, goal_status::CANCELED);
+    assert_eq!(result.errno, ECANCELED);
 
     stop.store(true, Ordering::Relaxed);
     let _ = server_thread.join();

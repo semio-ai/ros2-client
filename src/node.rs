@@ -30,7 +30,7 @@ use crate::{
   log::Log,
   names::*,
   parameters::*,
-  pubsub::{Publisher, Subscription},
+  pubsub::{Publisher, RawPublisher, Subscription},
   rcl_interfaces,
   ros_time::ROSTime,
   rosout::{NodeLoggingHandle, RosoutRaw},
@@ -1445,6 +1445,24 @@ impl Node {
     )
   }
 
+  /// Create a **raw** publisher — the dynamic counterpart of
+  /// [`create_publisher`](Self::create_publisher), and the topic-plane sibling
+  /// of [`create_raw_server`](Self::create_raw_server).
+  ///
+  /// It publishes pre-serialized full standalone CDR messages (see
+  /// [`RawPublisher`]) rather than a static message type `D`, so it can back a
+  /// topic whose message type is known only at runtime. The topic (and hence
+  /// the declared type name subscribers match on) is created with
+  /// [`create_topic`](Self::create_topic), exactly as for a typed publisher.
+  pub fn create_raw_publisher(
+    &mut self,
+    topic: &Topic,
+    qos: Option<QosPolicies>,
+  ) -> CreateResult<RawPublisher> {
+    let w = self.create_datawriter(topic, qos)?;
+    Ok(RawPublisher::new(w))
+  }
+
   pub fn create_action_client<A>(
     &mut self,
     service_mapping: ServiceMapping,
@@ -1595,6 +1613,78 @@ impl Node {
       my_status_publisher,
       my_action_name: action_name.clone(),
     })
+  }
+
+  /// Create a **raw** action server — the dynamic counterpart of
+  /// [`create_action_server`](Self::create_action_server).
+  ///
+  /// The three endpoints whose messages embed the action's user-defined types
+  /// (send_goal, get_result, feedback) are raw — byte-level CDR, for
+  /// goal/result/feedback types known only at runtime — while cancel_goal and
+  /// status keep their fixed `action_msgs` types and stay typed. See
+  /// [`RawActionServer`] for the endpoint surface and wire layouts. Enhanced
+  /// service mapping only, like every raw endpoint.
+  pub fn create_raw_action_server(
+    &mut self,
+    action_name: &Name,
+    action_type_name: &ActionTypeName,
+    action_qos: ActionServerQosPolicies,
+  ) -> CreateResult<RawActionServer> {
+    let services_base_name = action_name.push("_action");
+
+    let goal_service_type = action_type_name.dds_action_service("_SendGoal");
+    let goal_server = self.create_raw_server(
+      &services_base_name.push("send_goal"),
+      &goal_service_type,
+      action_qos.goal_service.clone(),
+      action_qos.goal_service,
+    )?;
+
+    let cancel_service_type = ServiceTypeName::new("action_msgs", "CancelGoal");
+    let cancel_server = self.create_server(
+      ServiceMapping::Enhanced,
+      &services_base_name.push("cancel_goal"),
+      &cancel_service_type,
+      action_qos.cancel_service.clone(),
+      action_qos.cancel_service,
+    )?;
+
+    let result_service_type = action_type_name.dds_action_service("_GetResult");
+    let result_server = self.create_raw_server(
+      &services_base_name.push("get_result"),
+      &result_service_type,
+      action_qos.result_service.clone(),
+      action_qos.result_service,
+    )?;
+
+    let action_topic_namespace = action_name.push("_action");
+
+    let feedback_topic_type = action_type_name.dds_action_topic("_FeedbackMessage");
+    let feedback_topic = self.create_topic(
+      &action_topic_namespace.push("feedback"),
+      feedback_topic_type,
+      &action_qos.feedback_publisher,
+    )?;
+    let feedback_publisher =
+      self.create_raw_publisher(&feedback_topic, Some(action_qos.feedback_publisher))?;
+
+    let status_topic_type = MessageTypeName::new("action_msgs", "GoalStatusArray");
+    let status_topic = self.create_topic(
+      &action_topic_namespace.push("status"),
+      status_topic_type,
+      &action_qos.status_publisher,
+    )?;
+    let status_publisher =
+      self.create_publisher(&status_topic, Some(action_qos.status_publisher))?;
+
+    Ok(RawActionServer::new(
+      goal_server,
+      cancel_server,
+      result_server,
+      feedback_publisher,
+      status_publisher,
+      action_name.clone(),
+    ))
   }
 
   /// Makes a handle to the `rosout` logging publisher.

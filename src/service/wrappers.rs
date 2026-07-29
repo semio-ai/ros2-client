@@ -19,7 +19,10 @@ use super::{request_id, RmwRequestId, ServiceMapping};
 // (De)Serialization is done in Wrappers, because they know which ServiceMapping
 // to apply, unlike (De)Serializer or their adapters. ServiceMapping must be
 // known in order to decode or generate the wire representation.
-pub(super) trait Wrapper {
+// `pub(crate)`: the raw topic publisher (`pubsub::RawPublisher`) rides the same
+// pass-through adapter — a topic sample has no service framing at all, so the
+// byte pass-through is exactly its serialization too.
+pub(crate) trait Wrapper {
   fn from_bytes_and_ri(input_bytes: &[u8], encoding: RepresentationIdentifier) -> Self;
   fn bytes(&self) -> Bytes;
 }
@@ -454,7 +457,7 @@ pub(super) type DataWriterR<RW> = no_key::DataWriter<RW, ServiceSerializerAdapte
 pub(super) struct ServiceDeserializerAdapter<RW> {
   phantom: PhantomData<RW>,
 }
-pub(super) struct ServiceSerializerAdapter<RW> {
+pub(crate) struct ServiceSerializerAdapter<RW> {
   phantom: PhantomData<RW>,
 }
 
