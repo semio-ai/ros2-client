@@ -328,6 +328,35 @@ impl<M> Subscription<M> {
   }
 }
 
+/// A **raw** ROS2 Subscription — the inbound counterpart of [`RawPublisher`],
+/// delivering each message as a full CDR message (`Vec<u8>`, encapsulation
+/// header included) for a runtime-typed codec. On the Zenoh backend a sample
+/// already carries the full CDR payload, so this wraps a typeless
+/// [`Subscription<()>`].
+///
+/// Created with
+/// [`Node::create_raw_subscription`](super::node::Node::create_raw_subscription).
+pub struct RawSubscription {
+  inner: Subscription<()>,
+}
+
+impl RawSubscription {
+  pub(crate) fn new(inner: Subscription<()>) -> Self {
+    Self { inner }
+  }
+
+  /// Await the next message as a full CDR message plus its metadata.
+  pub async fn take_raw(&self) -> Result<(Vec<u8>, MessageInfo), TakeError> {
+    self.inner.take_raw().await
+  }
+
+  /// Like [`take_raw`](Self::take_raw) but also returns the key expression the
+  /// sample arrived on (its last chunk is the sender's type hash).
+  pub async fn take_raw_keyed(&self) -> Result<(String, Vec<u8>, MessageInfo), TakeError> {
+    self.inner.take_raw_keyed().await
+  }
+}
+
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
@@ -338,6 +367,55 @@ mod tests {
 
   use super::{Publisher, Subscription};
   use crate::{Context, ContextOptions, MessageTypeName, Name, NodeName, NodeOptions, QosProfile};
+
+  #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+  async fn raw_subscription_receives_a_raw_publisher() {
+    let sub_port = 17517;
+    let pub_port = 17518;
+
+    let sub_ctx =
+      Context::with_options(ContextOptions::new().zenoh_config(make_config(sub_port, None)))
+        .expect("open subscriber context");
+    let pub_ctx = Context::with_options(
+      ContextOptions::new().zenoh_config(make_config(pub_port, Some(sub_port))),
+    )
+    .expect("open publisher context");
+
+    let sub_node = sub_ctx.new_node(NodeName::new("/", "raw_sub2").unwrap(), NodeOptions::new());
+    let pub_node = pub_ctx.new_node(NodeName::new("/", "raw_pub2").unwrap(), NodeOptions::new());
+
+    let make_topic = |n: &crate::Node| {
+      n.create_topic(
+        &Name::new("/", "raw_chatter2").unwrap(),
+        MessageTypeName::new("std_msgs", "String"),
+        &QosProfile::default(),
+      )
+    };
+    let sub = sub_node
+      .create_raw_subscription(&make_topic(&sub_node), None)
+      .expect("create raw subscription");
+    let publisher = pub_node
+      .create_raw_publisher(&make_topic(&pub_node), None)
+      .expect("create raw publisher");
+
+    let payload: Vec<u8> = vec![0x00, 0x01, 0x00, 0x00, 0xDE, 0xAD, 0xBE, 0xEF];
+
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+      publisher
+        .async_publish(&payload)
+        .await
+        .expect("async_publish");
+      if let Ok(Ok((bytes, info))) =
+        tokio::time::timeout(Duration::from_millis(200), sub.take_raw()).await
+      {
+        assert_eq!(bytes, payload, "raw bytes must survive the wire unchanged");
+        assert!(info.sequence_number() >= 1);
+        return;
+      }
+      assert!(Instant::now() < deadline, "no raw message within timeout");
+    }
+  }
 
   // Build a peer config on IPv4 loopback with multicast off. `listen`/`connect`
   // pin explicit ports so two in-process peers connect directly — no router

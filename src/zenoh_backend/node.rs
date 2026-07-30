@@ -21,7 +21,7 @@ use super::{
   context::Context,
   gid, keyexpr,
   parameters::{ParameterClient, ParameterEvent, ParameterServer},
-  pubsub::{Publisher, RawPublisher, Subscription},
+  pubsub::{Publisher, RawPublisher, RawSubscription, Subscription},
   qos_encoding,
   rosout::{Log, Logger},
   service::{Client, RawServer, Server},
@@ -202,6 +202,19 @@ impl Node {
     qos: Option<QosProfile>,
   ) -> zenoh::Result<RawPublisher> {
     Ok(RawPublisher::new(self.create_publisher::<()>(topic, qos)?))
+  }
+
+  /// Create a **raw** subscription — the inbound counterpart of
+  /// [`create_raw_publisher`](Self::create_raw_publisher): it delivers each
+  /// message as a full CDR message (`Vec<u8>`), for a runtime-typed codec.
+  pub fn create_raw_subscription(
+    &self,
+    topic: &Topic,
+    qos: Option<QosProfile>,
+  ) -> zenoh::Result<RawSubscription> {
+    Ok(RawSubscription::new(
+      self.create_subscription::<()>(topic, qos)?,
+    ))
   }
 
   /// Create a subscription for `topic`. `qos` overrides the topic QoS if given.

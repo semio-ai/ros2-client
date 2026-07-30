@@ -99,16 +99,33 @@ impl<M: Serialize> Publisher<M> {
 /// the DDS writer frames the payload with its own representation header.
 pub struct RawMessageWrapper {
   serialized_message: bytes::Bytes,
+  /// The representation the sample was received under, kept so the read side
+  /// ([`RawSubscription`]) can re-frame a full standalone CDR message. Unused
+  /// on the write path ([`RawPublisher`]), which always emits `CDR_LE`.
+  encoding: RepresentationIdentifier,
 }
 
 impl crate::service::wrappers::Wrapper for RawMessageWrapper {
-  fn from_bytes_and_ri(input_bytes: &[u8], _encoding: RepresentationIdentifier) -> Self {
+  fn from_bytes_and_ri(input_bytes: &[u8], encoding: RepresentationIdentifier) -> Self {
     RawMessageWrapper {
       serialized_message: bytes::Bytes::copy_from_slice(input_bytes),
+      encoding,
     }
   }
   fn bytes(&self) -> bytes::Bytes {
     self.serialized_message.clone()
+  }
+}
+
+/// The 4-byte CDR encapsulation header for a representation — `CDR_LE` is
+/// `00 01 00 00`, `CDR_BE` is `00 00 00 00`. The DDS wire carries the header
+/// outside the sample body, so the raw endpoints strip it on write and re-add
+/// it on read to hand a consumer a full standalone CDR message.
+fn encapsulation_header(encoding: RepresentationIdentifier) -> [u8; 4] {
+  if encoding == RepresentationIdentifier::CDR_BE {
+    [0x00, 0x00, 0x00, 0x00]
+  } else {
+    [0x00, 0x01, 0x00, 0x00]
   }
 }
 
@@ -120,7 +137,20 @@ impl RawMessageWrapper {
     let body = message.get(4..).unwrap_or(message);
     RawMessageWrapper {
       serialized_message: bytes::Bytes::copy_from_slice(body),
+      encoding: RepresentationIdentifier::CDR_LE,
     }
+  }
+
+  /// The received sample as a full standalone CDR message: the encapsulation
+  /// header for its representation, then the body — the inverse of
+  /// [`new_raw`](Self::new_raw), so a raw publisher and a raw subscription
+  /// round-trip the exact bytes.
+  fn unwrap_raw(&self) -> Vec<u8> {
+    let header = encapsulation_header(self.encoding);
+    let mut message = Vec::with_capacity(4 + self.serialized_message.len());
+    message.extend_from_slice(&header);
+    message.extend_from_slice(&self.serialized_message);
+    message
   }
 }
 
@@ -199,6 +229,98 @@ impl RawPublisher {
   /// possibly forever.
   pub fn wait_for_subscription(&self, my_node: &Node) -> impl Future<Output = ()> + Send {
     my_node.wait_for_reader(self.guid())
+  }
+}
+
+/// A **raw** ROS2 Subscription — the dynamic counterpart of [`Subscription`],
+/// and the inbound sibling of [`RawPublisher`].
+///
+/// It hands each received message back as a full standalone CDR message
+/// (`Vec<u8>`, encapsulation header included) rather than a compile-time
+/// `M: DeserializeOwned`, so a consumer can decode it against a type
+/// description known only at runtime. Interoperates with an ordinary typed
+/// publisher of the topic's declared type.
+///
+/// Created with
+/// [`Node::create_raw_subscription`](crate::Node::create_raw_subscription).
+pub struct RawSubscription {
+  datareader: no_key::SimpleDataReader<
+    RawMessageWrapper,
+    crate::service::wrappers::ServiceDeserializerAdapter<RawMessageWrapper>,
+  >,
+}
+
+impl RawSubscription {
+  // Created from Node.
+  pub(crate) fn new(
+    datareader: no_key::SimpleDataReader<
+      RawMessageWrapper,
+      crate::service::wrappers::ServiceDeserializerAdapter<RawMessageWrapper>,
+    >,
+  ) -> RawSubscription {
+    RawSubscription { datareader }
+  }
+
+  /// Take the next available message as a full standalone CDR message, or
+  /// `None` if none is available.
+  pub fn take(&self) -> ReadResult<Option<(Vec<u8>, MessageInfo)>> {
+    self.datareader.drain_read_notifications();
+    let dcc: Option<no_key::DeserializedCacheChange<RawMessageWrapper>> =
+      self.datareader.try_take_one()?;
+    Ok(dcc.map(|dcc| {
+      let message_info = MessageInfo::from(&dcc);
+      (dcc.into_value().unwrap_raw(), message_info)
+    }))
+  }
+
+  /// Asynchronous [`take`](Self::take): awaits the next message.
+  pub async fn async_take(&self) -> ReadResult<(Vec<u8>, MessageInfo)> {
+    let async_stream = self.datareader.as_async_stream();
+    pin_mut!(async_stream);
+    match async_stream.next().await {
+      Some(Err(e)) => Err(e),
+      Some(Ok(dcc)) => {
+        let message_info = MessageInfo::from(&dcc);
+        Ok((dcc.into_value().unwrap_raw(), message_info))
+      }
+      // Stream from SimpleDataReader is not supposed to ever end.
+      None => {
+        read_error_internal!("async_take(): SimpleDataReader value stream unexpectedly ended!")
+      }
+    }
+  }
+
+  pub fn guid(&self) -> rustdds::GUID {
+    self.datareader.guid()
+  }
+
+  pub fn gid(&self) -> Gid {
+    self.guid().into()
+  }
+
+  /// Waits until there is at least one matched publisher on this topic,
+  /// possibly forever. `my_node` must be the Node that created this
+  /// subscription, or the length of the wait is undefined.
+  pub fn wait_for_publisher(&self, my_node: &Node) -> impl Future<Output = ()> + Send {
+    my_node.wait_for_writer(self.guid())
+  }
+}
+
+impl Evented for RawSubscription {
+  fn register(&self, poll: &Poll, token: Token, interest: Ready, opts: PollOpt) -> io::Result<()> {
+    self.datareader.register(poll, token, interest, opts)
+  }
+  fn reregister(
+    &self,
+    poll: &Poll,
+    token: Token,
+    interest: Ready,
+    opts: PollOpt,
+  ) -> io::Result<()> {
+    self.datareader.reregister(poll, token, interest, opts)
+  }
+  fn deregister(&self, poll: &Poll) -> io::Result<()> {
+    self.datareader.deregister(poll)
   }
 }
 

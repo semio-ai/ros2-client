@@ -30,7 +30,7 @@ use crate::{
   log::Log,
   names::*,
   parameters::*,
-  pubsub::{Publisher, RawPublisher, Subscription},
+  pubsub::{Publisher, RawMessageWrapper, RawPublisher, RawSubscription, Subscription},
   rcl_interfaces,
   ros_time::ROSTime,
   rosout::{NodeLoggingHandle, RosoutRaw},
@@ -1461,6 +1461,23 @@ impl Node {
   ) -> CreateResult<RawPublisher> {
     let w = self.create_datawriter(topic, qos)?;
     Ok(RawPublisher::new(w))
+  }
+
+  /// Create a **raw** subscription — the inbound counterpart of
+  /// [`create_raw_publisher`](Self::create_raw_publisher). It delivers each
+  /// message as a full standalone CDR message (`Vec<u8>`), so a consumer can
+  /// decode it against a type description known only at runtime. Interoperates
+  /// with an ordinary typed publisher of the topic's declared type.
+  pub fn create_raw_subscription(
+    &mut self,
+    topic: &Topic,
+    qos: Option<QosPolicies>,
+  ) -> CreateResult<RawSubscription> {
+    let r = self.create_simpledatareader::<
+      RawMessageWrapper,
+      crate::service::wrappers::ServiceDeserializerAdapter<RawMessageWrapper>,
+    >(topic, qos)?;
+    Ok(RawSubscription::new(r))
   }
 
   pub fn create_action_client<A>(

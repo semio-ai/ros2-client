@@ -202,7 +202,9 @@ pub use zenoh_backend::context::{Context, ContextOptions};
 pub use zenoh_backend::node::{Node, NodeOptions, Topic};
 #[cfg(feature = "zenoh")]
 #[doc(inline)]
-pub use zenoh_backend::pubsub::{MessageInfo, Publisher, RawPublisher, Subscription};
+pub use zenoh_backend::pubsub::{
+  MessageInfo, Publisher, RawPublisher, RawSubscription, Subscription,
+};
 #[cfg(feature = "zenoh")]
 #[doc(inline)]
 pub use zenoh_backend::service::{Client, RawServer, RmwRequestId, Server};

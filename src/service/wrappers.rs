@@ -454,7 +454,7 @@ pub(super) type SimpleDataReaderR<RW> =
   no_key::SimpleDataReader<RW, ServiceDeserializerAdapter<RW>>;
 pub(super) type DataWriterR<RW> = no_key::DataWriter<RW, ServiceSerializerAdapter<RW>>;
 
-pub(super) struct ServiceDeserializerAdapter<RW> {
+pub(crate) struct ServiceDeserializerAdapter<RW> {
   phantom: PhantomData<RW>,
 }
 pub(crate) struct ServiceSerializerAdapter<RW> {
