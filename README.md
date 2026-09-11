@@ -31,7 +31,9 @@ ros2-client = { package = "ros2-client-multi-rmw", version = "0.13", default-fea
 Code stays `use ros2_client::…`. A release is cut by merging a version bump to
 `master`: [`release.yml`](.github/workflows/release.yml) publishes through
 crates.io trusted publishing when that version is not on crates.io yet — no tag,
-no token. [`CHANGELOG.md`](CHANGELOG.md) records each version.
+no token. [`CHANGELOG.md`](CHANGELOG.md) records each version. With the
+`upstream` remote configured, `gh pr create` targets `Atostek/ros2-client`
+unless told otherwise: pass `--repo semio-ai/ros2-client`.
 
 ### Re-aligning with upstream
 
