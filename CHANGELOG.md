@@ -7,6 +7,21 @@ follows [Keep a Changelog](https://keepachangelog.com/); versions follow
 entries start where the fork's own versions do; the library is imported as
 `ros2_client` throughout.
 
+## [0.13.1] - 2026-10-09
+
+### Fixed
+
+- DDS: `Publisher::wait_for_subscription`, `Subscription::wait_for_publisher`
+  and `Client::wait_for_service` could wait forever on an endpoint that was
+  already matched. The Spinner announces each match on every waiter's status
+  channel, a bounded one it `try_send`s into, so a burst of discovery events
+  (a peer with many endpoints, a waiter slow to run under load) dropped the
+  very match a waiter was looking for; the wait checked the match table once,
+  before the burst. The events now only wake the wait, which checks the
+  Spinner's match table after draining them — the table is updated before
+  the event is sent, so a dropped event can no longer hide a match. A wait
+  whose Spinner has stopped no longer spins on the closed channel.
+
 ## [0.13.0] - 2026-09-10
 
 ### Added

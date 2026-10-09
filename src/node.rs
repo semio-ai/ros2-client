@@ -1125,51 +1125,19 @@ impl Node {
 
   // reader waits for at least one writer to be present
   pub(crate) fn wait_for_writer(&self, reader: GUID) -> impl Future<Output = ()> {
-    // TODO: This may contain some synchrnoization hazard
-    let status_receiver = self.status_receiver();
-
-    let already_present = self
-      .readers_to_remote_writers
-      .lock()
-      .unwrap()
-      .get(&reader)
-      .map(|writers| !writers.is_empty()) // there is someone matched
-      .unwrap_or(false); // we do not even know the reader
-
-    if already_present {
-      WriterWait::Ready
-    } else {
-      WriterWait::Wait {
-        this_reader: reader,
-        status_event_stream: Box::pin(status_receiver),
-      }
-    }
+    MatchWait::new(
+      reader,
+      Arc::clone(&self.readers_to_remote_writers),
+      self.status_receiver(),
+    )
   }
 
   pub(crate) fn wait_for_reader(&self, writer: GUID) -> impl Future<Output = ()> {
-    // TODO: This may contain some synchrnoization hazard.
-    let status_receiver = self.status_receiver();
-
-    let already_present = self
-      .writers_to_remote_readers
-      .lock()
-      .unwrap()
-      .get(&writer)
-      .map(|readers| !readers.is_empty()) // there is someone matched
-      .unwrap_or(false); // we do not even know who is asking
-
-    // TODO: Is is possible to miss reader events if they appear after the check
-    // above, but do not somehow end up in the status_receiver stream?
-
-    if already_present {
-      info!("wait_for_reader: Already have matched a reader.");
-      ReaderWait::Ready
-    } else {
-      ReaderWait::Wait {
-        this_writer: writer,
-        status_event_stream: Box::pin(status_receiver),
-      }
-    }
+    MatchWait::new(
+      writer,
+      Arc::clone(&self.writers_to_remote_readers),
+      self.status_receiver(),
+    )
   }
 
   pub(crate) fn get_publisher_count(&self, subscription_guid: GUID) -> usize {
@@ -1824,122 +1792,79 @@ macro_rules! rosout {
     );
 }
 
-/// Future type for waiting Readers to appear over ROS2 Topic.
+/// Future of `wait_for_reader` / `wait_for_writer`: resolves once the local
+/// endpoint `local` has at least one matched remote endpoint in `matches`.
 ///
-/// Produced by `node.wait_for_reader(writer_guid)`
+/// The Spinner records every match in `matches` *before* it announces the
+/// match on the node's status channels, and those channels are bounded and
+/// lossy: the Spinner `try_send`s, and drops whatever does not fit. A peer
+/// with many endpoints produces a burst of discovery events, so a waiter that
+/// has not run yet can lose the very match it waits for. The events are
+/// therefore only wakeups here, and `matches` is what the future checks,
+/// after draining every event that woke it. An event is dropped only while
+/// the channel is full, i.e. while the waiter still has events to drain, so
+/// the check after the drain always sees a match whose event was dropped.
 //
 // This is implemented as a separate struct instead of just async function in
 // Node so that it does not borrow the node and thus can be Send.
-//use pin_project::pin_project;
 #[must_use = "futures do nothing unless you `.await` or poll them"]
-pub enum ReaderWait<'a> {
-  // We need to wait for an event that is for us
-  Wait {
-    this_writer: GUID, // Writer who is waiting for Readers to appear
-    status_event_stream: stream::BoxStream<'a, NodeEvent>,
-  },
-  // No need to wait, can resolve immediately.
-  Ready,
+struct MatchWait<'a> {
+  local: GUID,
+  matches: Arc<Mutex<BTreeMap<GUID, BTreeSet<GUID>>>>,
+  // `None` once the Spinner is gone: nothing can match any more.
+  status_event_stream: Option<stream::BoxStream<'a, NodeEvent>>,
 }
 
-impl Future for ReaderWait<'_> {
-  type Output = ();
-
-  fn poll(mut self: Pin<&mut Self>, cx: &mut task::Context<'_>) -> Poll<Self::Output> {
-    match *self {
-      ReaderWait::Ready => Poll::Ready(()),
-
-      ReaderWait::Wait {
-        this_writer,
-        ref mut status_event_stream,
-      } => {
-        debug!("wait_for_reader: Waiting for a reader.");
-        loop {
-          match status_event_stream.poll_next_unpin(cx) {
-            // Check if we have RemoteReaderMatched event and it is for this_writer
-            Poll::Ready(Some(NodeEvent::DDS(
-              DomainParticipantStatusEvent::RemoteReaderMatched {
-                local_writer,
-                remote_reader,
-              },
-            )))
-              if local_writer == this_writer =>
-            {
-              debug!("wait_for_reader: Matched remote reader {remote_reader:?}.");
-              return Poll::Ready(());
-            }
-
-            Poll::Ready(_) => {
-              // Received something else, such as other event or error
-              debug!("wait_for_reader: other event. Continue polling.");
-              // So we do nothing but go to the next iteration.
-            }
-
-            Poll::Pending => return Poll::Pending,
-          }
-        }
-      }
+impl<'a> MatchWait<'a> {
+  fn new(
+    local: GUID,
+    matches: Arc<Mutex<BTreeMap<GUID, BTreeSet<GUID>>>>,
+    status_event_receiver: Receiver<NodeEvent>,
+  ) -> Self {
+    MatchWait {
+      local,
+      matches,
+      status_event_stream: Some(Box::pin(status_event_receiver)),
     }
+  }
+
+  fn matched(&self) -> bool {
+    self
+      .matches
+      .lock()
+      .unwrap()
+      .get(&self.local)
+      .is_some_and(|remotes| !remotes.is_empty())
   }
 }
 
-/// Future type for waiting Writers to appear over ROS2 Topic.
-///
-/// Produced by `node.wait_for_writer(writer_guid)`
-//
-// This is implemented as a separate struct instead of just async function in
-// Node so that it does not borrow the node and thus can be Send.
-#[must_use = "futures do nothing unless you `.await` or poll them"]
-pub enum WriterWait<'a> {
-  // We need to wait for an event that is for us
-  Wait {
-    this_reader: GUID,
-    status_event_stream: stream::BoxStream<'a, NodeEvent>,
-  },
-  // No need to wait, can resolve immediately.
-  Ready,
-}
-
-impl Future for WriterWait<'_> {
+impl Future for MatchWait<'_> {
   type Output = ();
 
   fn poll(mut self: Pin<&mut Self>, cx: &mut task::Context<'_>) -> Poll<Self::Output> {
-    match *self {
-      WriterWait::Ready => Poll::Ready(()),
-
-      WriterWait::Wait {
-        this_reader,
-        ref mut status_event_stream,
-      } => {
-        debug!("wait_for_writer: Waiting for a writer.");
-        loop {
-          // We loop to pump events out of the stream until we get the desired event
-          // or "Pending". If we stop at the first event, then there is no waker
-          // installed and we are stuck.
-          match status_event_stream.poll_next_unpin(cx) {
-            // Check if we have RemoteWriterMatched event and it is for this_writer
-            Poll::Ready(Some(NodeEvent::DDS(
-              DomainParticipantStatusEvent::RemoteWriterMatched {
-                local_reader,
-                remote_writer,
-              },
-            )))
-              if local_reader == this_reader =>
-            {
-              debug!("wait_for_writer: Matched remote writer {remote_writer:?}.");
-              return Poll::Ready(());
-            }
-
-            Poll::Ready(_) => {
-              // Received something else, such as other event or error
-              trace!("=== other writer. Continue polling.");
-              // No return, go to next iteration.
-            }
-
-            Poll::Pending => return Poll::Pending,
-          }
+    // Pump the stream until it is Pending, so a waker stays installed. What
+    // the events say does not matter: each one only means "look again".
+    if let Some(stream) = self.status_event_stream.as_mut() {
+      let mut closed = false;
+      while let Poll::Ready(event) = stream.poll_next_unpin(cx) {
+        if event.is_none() {
+          closed = true;
+          break;
         }
       }
+      if closed {
+        self.status_event_stream = None;
+      }
+    }
+
+    if self.matched() {
+      debug!(
+        "wait for match: {:?} has a matched remote endpoint.",
+        self.local
+      );
+      Poll::Ready(())
+    } else {
+      Poll::Pending
     }
   }
 }
@@ -1960,5 +1885,48 @@ mod tests {
 
     fn requires_send_sync<T: Send + Sync>(_t: T) {}
     requires_send_sync(node);
+  }
+
+  // The Spinner records a match, then announces it with `try_send` on a
+  // bounded channel. When the waiter's channel is already full, the
+  // announcement is dropped; the waiter must still resolve once it has run.
+  #[test]
+  fn a_match_whose_event_was_dropped_still_resolves_the_wait() {
+    use std::{
+      collections::{BTreeMap, BTreeSet},
+      sync::{Arc, Mutex},
+      task::{Context as TaskContext, Poll},
+    };
+
+    use futures::{task::noop_waker, Future};
+    use rustdds::GUID;
+
+    use super::{MatchWait, NodeEvent};
+    use crate::{entities_info::ParticipantEntitiesInfo, gid::Gid};
+
+    let local = GUID::new_participant_guid();
+    let remote = GUID::new_participant_guid();
+    let unrelated = || NodeEvent::ROS(ParticipantEntitiesInfo::new(Gid::from(remote), vec![]));
+    let matches = Arc::new(Mutex::new(BTreeMap::<GUID, BTreeSet<GUID>>::new()));
+    let (sender, receiver) = async_channel::bounded(1);
+    let mut wait = Box::pin(MatchWait::new(local, Arc::clone(&matches), receiver));
+    let waker = noop_waker();
+    let mut cx = TaskContext::from_waker(&waker);
+    assert_eq!(
+      wait.as_mut().poll(&mut cx),
+      Poll::Pending,
+      "nothing matched yet"
+    );
+
+    // A burst fills the waiter's channel before the waiter runs again ...
+    sender.try_send(unrelated()).unwrap();
+    // ... then the Spinner records the match, and its announcement is dropped.
+    matches
+      .lock()
+      .unwrap()
+      .insert(local, BTreeSet::from([remote]));
+    assert!(sender.try_send(unrelated()).is_err(), "the channel is full");
+
+    assert_eq!(wait.as_mut().poll(&mut cx), Poll::Ready(()));
   }
 }
