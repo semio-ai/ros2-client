@@ -49,4 +49,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.85.1
+      # No lockfile is committed, so resolve to the newest versions that
+      # declare a compatible `rust-version` instead of the newest ones: a
+      # dependency raising its MSRV (uuid 1.27 needs 1.89) must not fail a
+      # check of our own MSRV.
       - run: cargo check
+        env:
+          CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS: fallback
