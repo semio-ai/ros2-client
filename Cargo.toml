@@ -3,9 +3,9 @@
 # `ros2-client` on crates.io). The library is still imported as `ros2_client`
 # (see the [lib] section), so consumers only rename the dependency, not the code.
 name = "ros2-client-multi-rmw"
-version = "0.13.1"
+version = "0.14.0"
 edition = "2018"
-rust-version = "1.82.0"
+rust-version = "1.88.0"
 authors = ["Juhana Helovuo <juhana.helovuo@atostek.com>"]
 description = "ROS2 client library based on RustDDS"
 readme = "README.md"
@@ -96,7 +96,7 @@ default = ["dds", "jazzy"]
 # without pulling RustDDS in.
 # rustdds = {  path = "../RustDDS"  } # dev setting
 # rustdds = {   git = "https://github.com/Atostek/RustDDS.git" }
-rustdds = { version = "0.13", optional = true } # release setting
+rustdds = { version = "0.14", optional = true } # release setting
 
 # Zenoh backend (feature `zenoh`). Optional; only compiled when `zenoh` is
 # enabled. `unstable` is required for liveliness, advanced pub/sub and matching
