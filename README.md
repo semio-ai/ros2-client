@@ -25,7 +25,7 @@ Upstream owns the `ros2-client` name on crates.io, so this fork is **published a
 line differs:
 
 ```toml
-ros2-client = { package = "ros2-client-multi-rmw", version = "0.13", default-features = false, features = ["zenoh"] }
+ros2-client = { package = "ros2-client-multi-rmw", version = "0.14", default-features = false, features = ["zenoh"] }
 ```
 
 Code stays `use ros2_client::…`. A release is cut by merging a version bump to

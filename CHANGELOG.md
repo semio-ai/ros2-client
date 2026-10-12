@@ -7,6 +7,22 @@ follows [Keep a Changelog](https://keepachangelog.com/); versions follow
 entries start where the fork's own versions do; the library is imported as
 `ros2_client` throughout.
 
+## [0.14.0] - 2026-10-13
+
+### Changed
+
+- The DDS backend runs on RustDDS 0.14 (`rustdds = "0.14"`, resolving to
+  0.14.3). The crate re-exports `rustdds`, so a dependent that names its types
+  moves to 0.14 with it. The reliable send window is no longer the History
+  depth but `ResourceLimits::max_samples` (8192 when unset): a reliable
+  `KeepLast(n)` writer keeps writing while `n` earlier samples await
+  acknowledgement, where it used to block for up to `max_blocking_time` and
+  then fail with `WouldBlock`. Also in 0.14: DATAFRAG reassembly
+  under reliable delivery, XCDR1/XCDR2 `DataRepresentation` matching,
+  Ownership matching on kind only, stale-ACKNACK handling, and a lock
+  inversion between endpoint creation and discovery queries.
+- The minimum supported Rust version is 1.88, RustDDS 0.14's.
+
 ## [0.13.1] - 2026-10-09
 
 ### Fixed

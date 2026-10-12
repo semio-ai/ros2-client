@@ -16,7 +16,7 @@ ROS 2 CLI the user called out.
 
 **CI** (`.github/workflows/`):
 - `static-checks.yml` — `fmt` (nightly), `doc`, `clippy` (nightly, all
-  lib/bins/examples), `msrv` (`cargo check` on 1.85.1).
+  lib/bins/examples), `msrv` (`cargo check` on 1.88.0).
 - `tests.yml` — `cargo test --test-threads=1` and `--features=security`, Ubuntu.
 - `tests-macos.yml` — `cargo test` on macOS.
 - `audit.yml` — `cargo audit` on `Cargo.*` changes.
